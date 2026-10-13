@@ -109,6 +109,10 @@ All operations use direct API calls. A persistent browser profile (`~/.teams-mcp
 
 `teams_login` always tries headless SSO before showing a visible browser. Long-lived Microsoft session cookies (days/weeks) mean users rarely re-authenticate manually, even though MSAL tokens expire after ~1 hour.
 
+A saved session holds only the tokens the browser itself had acquired, and Teams JS mints some lazily — the CSA (chatsvcagg) token behind favorites is routinely absent right after SSO, and `forceNew` compounds it by clearing a session state that HTTP refresh had already filled in. `teams_login` therefore tops up: if any core credential (Substrate, Skype Spaces, CSA, messaging cookies) is missing it runs one HTTP refresh before returning, so `teams_status` is accurate immediately after login instead of recovering on some later call. The top-up is skipped when the session is already complete, and a failure is logged but never fails the login.
+
+Microsoft redirects Teams users to new hosts without warning (`teams.cloud.microsoft`, then `teams.chat.microsoft.com`), so every host check reads one list: `TEAMS_HOSTS` in `constants.ts`. A host missing from it makes `getAuthStatus()` report an unknown page on a session that is in fact signed in, and manual login then hangs with the window open until the 5-minute timeout. Login detection treats a live MSAL token as the proof of sign-in: new Teams renders none of the `data-tid` elements earlier versions exposed, so waiting on the DOM never completes.
+
 The server uses the system browser via Playwright's `launchPersistentContext()` (Edge on Windows, Chrome on macOS/Linux; ~180MB saved vs bundled Chromium). Only one process can use the profile at a time (Chromium lock); the token-refresh module serializes refreshes to prevent concurrent access and session-state overwrites. If no system browser is found, the error suggests installing Chrome or running `npx playwright install chromium`.
 
 ### Token refresh

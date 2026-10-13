@@ -102,7 +102,7 @@ This installs two binaries: `msteams-mcp` (the MCP server) and `msteams` (the CL
 npx -y msteams-mcp msteams status
 ```
 
-See [CLI Usage](#cli-usage) for commands.
+See [CLI Usage](#cli-usage) for commands, or run `msteams` for the command list.
 
 ## Available Tools
 
@@ -268,13 +268,18 @@ The server also exposes passive resources for context discovery:
 
 ## CLI Usage
 
-`msteams` exposes every tool the MCP server does - full parity, same authentication, same session files. Run with no arguments to list all tools and shortcuts.
+`msteams` exposes every tool the MCP server does - full parity, same authentication, same session files. Commands, flags and help are generated from the tool definitions, so the CLI never lags behind the server.
 
 If you installed globally (`npm install -g msteams-mcp`), invoke it directly:
 
 ```bash
-# List available tools and shortcuts
+# The command list, one line each
 msteams
+msteams --version
+
+# What one command does, and all of its flags
+msteams help send_message
+msteams search --help
 
 # Check authentication status
 msteams status
@@ -288,9 +293,9 @@ msteams search "meeting notes"
 msteams search "project" --from 0 --size 50
 
 # Search emails
-msteams teams_search_email --query "from:sarah@company.com"
+msteams email "from:sarah@company.com"
 
-# Send a message (default: your own notes/self-chat)
+# Send a message (default: your own self-chat, 48:notes)
 msteams send "Hello from Teams MCP!"
 msteams send "Message" --to "conversation-id"
 
@@ -300,28 +305,29 @@ msteams favorites
 msteams activity
 msteams unread
 
-# Any tool by name (the teams_ prefix is optional)
-msteams teams_search_emoji --query "heart"
-msteams find_channel --query "support"
-
-# Machine-readable output
-msteams search "query" --json
+# Machine-readable output, on stdout, for scripts
+msteams search "query" --json | jq '.results[0].conversationId'
 ```
 
-**Command form:** `msteams <command> [primaryArg] [--key value ...]`. Any unrecognised command is treated as a tool name (`teams_` is added automatically). Common flags like `--to`, `--from`, `--size`, `--query`, `--force` map to the matching tool parameters; run `msteams` with no arguments to see the full list.
+**Command form:** `msteams <command> [value] [--flag value]`.
+
+- **Commands** are the tool names without the `teams_`/`get_` prefix (`search`, `send_message`, `thread`, `meetings`). Any unambiguous abbreviation works, so `send` reaches `send_message`; the full tool name always works too.
+- **Flags** are the tool's own parameters, in camelCase (`--conversationId`, `--threadRootId`, `--fromUrl`). A few short aliases exist where they read better: `--to`, `--msg`, `--reply`, `--user`, `--force`. Booleans work bare (`--markRead`) or with a value (`--markRead false`). Unknown flags are rejected with the list of valid ones.
+- **The first bare value** goes to the command's main parameter: `msteams search "query"` is `--query "query"`.
+- **Output** goes to stdout, diagnostics to stderr, so pipes and redirects behave. Colour and emoji appear only on a terminal, and `NO_COLOR` turns them off.
+- **Exit codes:** `0` success, `1` the tool failed, `2` the command was malformed.
+- **`--json`** prints the tool's JSON payload, ready for `jq`.
 
 ### From a repo clone
 
 If you're working from source, the same CLI is wired to `npm run cli` (runs via `tsx`, no build needed):
 
 ```bash
-npm run cli                          # list tools
+npm run cli                          # command list
 npm run cli -- search "your query"
 npm run cli -- status
 npm run cli -- send "Hi" --to "conversation-id"
 ```
-
-
 
 ## Limitations
 

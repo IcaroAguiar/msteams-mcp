@@ -41,6 +41,19 @@ const allTools: RegistryEntry[] = [
   ...assignmentTools,
 ];
 
+/**
+ * Tool names grouped by category, for `msteams help`. Derived from the same
+ * arrays as the registry, so a new tool appears in help automatically.
+ */
+export const toolCategories: Array<{ name: string; tools: string[] }> = [
+  { name: 'Account', tools: [...authTools, ...peopleTools].map(t => t.definition.name) },
+  { name: 'Search', tools: searchTools.map(t => t.definition.name) },
+  { name: 'Messages', tools: messageTools.map(t => t.definition.name) },
+  { name: 'Meetings', tools: meetingTools.map(t => t.definition.name) },
+  { name: 'Files', tools: [...fileTools, ...tagTools].map(t => t.definition.name) },
+  { name: 'Assignments', tools: assignmentTools.map(t => t.definition.name) },
+];
+
 /** Lookup map for tools by name. */
 const toolsByName = new Map<string, RegistryEntry>(
   allTools.map(tool => [tool.definition.name, tool])

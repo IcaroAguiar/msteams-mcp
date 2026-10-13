@@ -17,6 +17,10 @@ An MCP (Model Context Protocol) server that lets AI assistants interact with Mic
 src/
 ├── index.ts              # Entry point, runs the MCP server
 ├── cli.ts                # Standalone CLI (msteams bin) - full tool parity via in-memory MCP transport
+├── cli/                  # CLI plumbing, all driven by the tool definitions
+│   ├── resolve.ts        # Command resolution and schema-driven flag parsing
+│   ├── render.ts         # Generic response rendering, colour/TTY handling
+│   └── help.ts           # Generated command index and per-command help
 ├── server.ts             # MCP server (TeamsServer class) - delegates to tool registry
 ├── constants.ts          # Shared constants (page sizes, timeouts, thresholds)
 ├── tools/                # Tool handlers (modular design)
@@ -182,21 +186,47 @@ CI (GitHub Actions) runs lint, typecheck, tests, and build on every push and PR,
 
 `src/cli.ts` is a first-class, installable CLI (`msteams` bin) with full tool parity to the MCP server. It runs the server in-process over the SDK's `InMemoryTransport`, so every call exercises the real MCP protocol layer (tool definitions, input validation, response formatting). This makes it both the integration-test harness and the way to test against live Teams APIs. Use `npm run cli` from a clone (via `tsx`, no build needed) or the installed binary.
 
-The CLI can call any tool generically; unrecognised commands are treated as tool names (auto-prefixed with `teams_`). Pass parameters as `--key value`.
+Everything user-facing is derived from the tool definitions, so a new tool is
+callable, documented and type-coerced with no CLI changes:
+
+- `src/cli/resolve.ts` resolves a typed command to a tool name (exact, then
+  `teams_<cmd>`, `teams_get_<cmd>`, `teams_search_<cmd>`, a unique
+  `teams_<cmd>*` prefix, then a unique substring match), and parses flags with
+  `node:util` `parseArgs` using an options config built from the tool's JSON
+  input schema. Types come from the schema, so there is no hand-maintained
+  flag or numeric-field table. The first bare value maps to the first required
+  string parameter. Unknown flags, bad numbers and missing required parameters
+  are usage errors raised before the server is called.
+- `src/cli/render.ts` prints any response shape: the first array becomes a
+  numbered list with a headline field and labelled fields, everything else
+  becomes labelled fields. There is no per-tool printer.
+- `src/cli/help.ts` generates the command index (one line per command, first
+  sentence of the description) and per-command help (flags, types, required
+  markers) from the same definitions. Tool descriptions are written for an LLM,
+  so help uses only their first sentence; `firstSentence()` treats a period
+  followed by a non-capital (as in "e.g.") as mid-sentence.
+- Grouping in the index comes from `toolCategories` in `tools/registry.ts`,
+  derived from the same arrays as the registry itself.
+
+Conventions worth keeping: data on stdout and diagnostics on stderr (all of
+`utils/logger.ts` writes to stderr, since stdout is the MCP stdio channel),
+colour and emoji only when `process.stdout.isTTY` and `NO_COLOR` is unset, and
+exit codes 0 success / 1 tool failure / 2 malformed command. `--json` prints the
+tool's own payload, not the MCP envelope.
 
 ```bash
-npm run cli                                     # List tools and shortcuts
-npm run cli -- find_channel --query "support"   # Generic tool call
-npm run cli -- search "your query"              # Shortcut for teams_search
-npm run cli -- login                            # Headless SSO first
+npm run cli                                     # Command index
+npm run cli -- help send_message                # One command in detail
+npm run cli -- find_channel --query "support"   # Full tool name
+npm run cli -- search "your query"              # Bare value -> --query
 npm run cli -- login --force true               # Clear session and re-login
-npm run cli -- search "your query" --json       # Raw MCP JSON response
+npm run cli -- search "your query" --json       # Tool payload as JSON
 npm run cli -- search "your query" --from 25 --size 25  # Pagination
 ```
 
 ### Unit tests
 
-Vitest, focused on pure functions and outcomes over implementation. Tests are colocated with source as `src/**/*.test.ts` and span `api/`, `auth/`, `tools/`, `types/` and `utils/`; `parsers.test.ts` is the largest, covering HTML stripping/entity decoding, deep-link generation, timestamp extraction, search/people/email result parsing, JWT profile extraction, token-status calculation, base64 GUID decoding, and user-ID extraction. Fixtures (`src/__fixtures__/api-responses.ts`) mirror real API shapes.
+Vitest, focused on pure functions and outcomes over implementation. Tests are colocated with source as `src/**/*.test.ts` and span `api/`, `auth/`, `cli/`, `tools/`, `types/` and `utils/`; `parsers.test.ts` is the largest, covering HTML stripping/entity decoding, deep-link generation, timestamp extraction, search/people/email result parsing, JWT profile extraction, token-status calculation, base64 GUID decoding, and user-ID extraction. Fixtures (`src/__fixtures__/api-responses.ts`) mirror real API shapes.
 
 Run a subset with `npx vitest run src/utils/parsers.test.ts` (one file), `npx vitest run src/auth` (a directory), or `npx vitest run -t "extractObjectId"` (by test name).
 

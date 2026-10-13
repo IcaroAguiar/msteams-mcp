@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { encrypt, decrypt } from './crypto.js';
-import { SESSION_EXPIRY_HOURS } from '../constants.js';
+import { SESSION_EXPIRY_HOURS, TEAMS_HOSTS } from '../constants.js';
 import * as log from '../utils/logger.js';
 
 /**
@@ -171,12 +171,7 @@ export function clearTokenCache(): void {
  * Known Teams origins (commercial and government clouds).
  * Used to find the correct origin in session state.
  */
-const TEAMS_ORIGINS = [
-  'https://teams.cloud.microsoft', // New Teams URL (often holds SubstrateSearch tokens)
-  'https://teams.microsoft.com',   // Commercial legacy
-  'https://teams.microsoft.us',    // GCC-High
-  'https://dod.teams.microsoft.us', // DoD
-];
+const TEAMS_ORIGINS = TEAMS_HOSTS.map(host => `https://${host}`);
 
 /**
  * Returns true if localStorage has a SubstrateSearch MSAL token entry.
@@ -222,8 +217,6 @@ export function getTeamsOrigin(state: SessionState): SessionState['origins'][num
     if (origin) return origin;
   }
 
-  // Fallback: find any origin containing 'teams.microsoft'
-  return state.origins.find(o =>
-    o.origin.includes('teams.microsoft') || o.origin.includes('teams.cloud')
-  ) ?? null;
+  // Fallback: any origin on a known Teams host
+  return state.origins.find(o => TEAMS_HOSTS.some(host => o.origin.includes(host))) ?? null;
 }

@@ -252,3 +252,19 @@ export const ASSIGNMENTS_APP_ID = '8f348934-64be-4bb2-bc16-c54c96789f43';
 
 /** Microsoft Graph token audiences: MSAL caches either the URL or the app ID. */
 export const GRAPH_AUDIENCES: readonly string[] = ['https://graph.microsoft.com', '00000003-0000-0000-c000-000000000000'];
+
+/**
+ * Teams web hosts, in the order a session's origins should be preferred.
+ *
+ * Microsoft keeps adding hosts (`teams.cloud.microsoft`, then
+ * `teams.chat.microsoft.com`) and redirects users to them without warning, so
+ * every host check reads this one list: a missing host makes login detection
+ * fail on a page that is in fact signed in.
+ */
+export const TEAMS_HOSTS: readonly string[] = [
+  'teams.cloud.microsoft',    // New Teams (often holds the SubstrateSearch token)
+  'teams.chat.microsoft.com', // New Teams chat host
+  'teams.microsoft.com',      // Commercial legacy
+  'teams.microsoft.us',       // GCC-High
+  'dod.teams.microsoft.us',   // DoD
+];

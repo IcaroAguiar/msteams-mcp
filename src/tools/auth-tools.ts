@@ -20,7 +20,10 @@ import {
   getMessageAuthStatus,
   extractMessageAuth,
   extractCsaToken,
+  extractSubstrateToken,
+  extractSkypeSpacesToken,
 } from '../auth/token-extractor.js';
+import { refreshTokensViaHttp } from '../auth/token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import * as log from '../utils/logger.js';
 import { resetAssignmentsAvailability } from '../utils/auth-guards.js';
@@ -68,6 +71,33 @@ const statusToolDefinition: Tool = {
 /** Minimum minutes remaining on token to consider it valid (skip browser). */
 const TOKEN_VALID_THRESHOLD_MINUTES = 10;
 
+/** Every core credential a session needs: search, calendar, favourites, messaging. */
+function coreCredentialsComplete(): boolean {
+  return extractSubstrateToken() !== null
+    && extractSkypeSpacesToken() !== null
+    && extractCsaToken() !== null
+    && extractMessageAuth() !== null;
+}
+
+/**
+ * Mints any core credential the browser did not leave in the saved session.
+ *
+ * Teams JS acquires some resource tokens lazily — the CSA (chatsvcagg) token
+ * behind favourites is routinely absent from a session saved straight after
+ * SSO, so login would report success while teams_status reported favourites
+ * unavailable until some later call happened to trigger a refresh. One HTTP
+ * exchange mints every core resource. Failure is non-fatal: the session is
+ * still usable and the next tool call retries through auto-login.
+ */
+async function fillCoreCredentialGaps(): Promise<void> {
+  if (coreCredentialsComplete()) return;
+
+  const result = await refreshTokensViaHttp();
+  if (!result.ok) {
+    log.warn('login', `Could not top up core credentials: ${result.error.message}`);
+  }
+}
+
 async function handleLogin(
   input: z.infer<typeof LoginInputSchema>,
 ): Promise<ToolResult> {
@@ -81,6 +111,7 @@ async function handleLogin(
     // Fast path: if tokens are still valid, skip browser entirely
     const tokenStatus = getSubstrateTokenStatus();
     if (tokenStatus.hasToken && tokenStatus.minutesRemaining! >= TOKEN_VALID_THRESHOLD_MINUTES) {
+      await fillCoreCredentialGaps();
       return {
         success: true,
         data: {
@@ -113,6 +144,7 @@ async function handleLogin(
       true   // Headless mode - throw immediately if user interaction required
     );
     await closeBrowser(headless, true);
+    await fillCoreCredentialGaps();
 
     return {
       success: true,
@@ -133,6 +165,8 @@ async function handleLogin(
     // Close browser after login - we only need the saved session/tokens
     await closeBrowser(visible, true);
   }
+
+  await fillCoreCredentialGaps();
 
   return {
     success: true,

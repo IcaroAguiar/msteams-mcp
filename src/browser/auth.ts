@@ -8,6 +8,7 @@ import { saveSessionState } from './context.js';
 import {
   OVERLAY_STEP_PAUSE_MS,
   OVERLAY_COMPLETE_PAUSE_MS,
+  TEAMS_HOSTS,
 } from '../constants.js';
 import { extractSubstrateToken } from '../auth/token-extractor.js';
 import * as logger from '../utils/logger.js';
@@ -171,15 +172,6 @@ const LOGIN_URL_PATTERNS = [
   'login.microsoft.com',
 ];
 
-// Selectors that indicate successful authentication
-const AUTH_SUCCESS_SELECTORS = [
-  '[data-tid="app-bar"]',
-  '[data-tid="search-box"]',
-  'input[placeholder*="Search"]',
-  '[data-tid="chat-list"]',
-  '[data-tid="team-list"]',
-];
-
 interface AuthStatus {
   isAuthenticated: boolean;
   isOnLoginPage: boolean;
@@ -194,26 +186,9 @@ function isLoginUrl(url: string): boolean {
 }
 
 /**
- * Checks if the page shows authenticated Teams content.
- */
-async function hasAuthenticatedContent(page: Page): Promise<boolean> {
-  for (const selector of AUTH_SUCCESS_SELECTORS) {
-    try {
-      const count = await page.locator(selector).count();
-      if (count > 0) {
-        return true;
-      }
-    } catch {
-      // Selector not found, continue checking others
-    }
-  }
-  return false;
-}
-
-/**
  * Gets the current authentication status.
  */
-async function getAuthStatus(page: Page): Promise<AuthStatus> {
+export async function getAuthStatus(page: Page): Promise<AuthStatus> {
   const currentUrl = page.url();
   const onLoginPage = isLoginUrl(currentUrl);
 
@@ -226,11 +201,15 @@ async function getAuthStatus(page: Page): Promise<AuthStatus> {
     };
   }
 
-  // If on Teams domain, check for authenticated content
-  if (currentUrl.includes('teams.microsoft.com')) {
-    const hasContent = await hasAuthenticatedContent(page);
+  // On a Teams domain, a live MSAL token is the proof of sign-in: it is what
+  // every API call needs and what the saved session is for. Teams' own DOM
+  // markers are not a usable signal — new Teams renders none of the `data-tid`
+  // elements earlier versions exposed, so waiting for them left a completed
+  // login undetected and the browser window open until the manual-login
+  // timeout.
+  if (isTeamsUrl(currentUrl)) {
     return {
-      isAuthenticated: hasContent,
+      isAuthenticated: await checkBrowserTokenExpiry(page) > 0,
       isOnLoginPage: false,
       currentUrl,
     };
@@ -247,19 +226,11 @@ async function getAuthStatus(page: Page): Promise<AuthStatus> {
 /** Timeout for detecting login redirect (ms). */
 const LOGIN_REDIRECT_TIMEOUT_MS = 5000;
 
-/** URL patterns that indicate we're on a Teams page (not redirected elsewhere). */
-const TEAMS_URL_PATTERNS = [
-  'teams.microsoft.com',
-  'teams.microsoft.us',      // GCC-High
-  'dod.teams.microsoft.us',  // DoD
-  'teams.cloud.microsoft',   // New Teams URL
-];
-
 /**
  * Checks if a URL is a Teams domain.
  */
-function isTeamsUrl(url: string): boolean {
-  return TEAMS_URL_PATTERNS.some(pattern => url.includes(pattern));
+export function isTeamsUrl(url: string): boolean {
+  return TEAMS_HOSTS.some(host => url.includes(host));
 }
 
 /**

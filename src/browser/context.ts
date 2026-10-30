@@ -13,7 +13,7 @@
  * - No need for storageState temp files or encrypted session restoration for browser use
  */
 
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -23,11 +23,16 @@ import {
 } from '../auth/session-store.js';
 import { clearRegionCache } from '../utils/auth-guards.js';
 import * as log from '../utils/logger.js';
+import { captureTeamsPage, connectExistingChrome, existingChromeRequested } from './existing-chrome.js';
 
-export interface BrowserManager {
+type BrowserSession = {
   context: BrowserContext;
   page: Page;
-}
+};
+export type BrowserManager = BrowserSession & (
+  { kind: 'owned' } | { kind: 'attached'; browser: Browser }
+);
+const attachedPages = new WeakMap<BrowserContext, Page>();
 
 /**
  * Directory for the persistent browser profile.
@@ -135,6 +140,13 @@ export async function createBrowserContext(
 ): Promise<BrowserManager> {
   ensureConfigDir();
 
+  if (existingChromeRequested()) {
+    if (headless) throw new Error('The existing Chrome profile requires an interactive teams_login call.');
+    const manager = await connectExistingChrome();
+    attachedPages.set(manager.context, manager.page);
+    return manager;
+  }
+
   const channel = getBrowserChannel();
 
   // Clean up any stale lock files before attempting to launch
@@ -151,7 +163,7 @@ export async function createBrowserContext(
     // Persistent contexts start with one page; use it or create one
     const page = context.pages()[0] ?? await context.newPage();
 
-    return { context, page };
+    return { kind: 'owned', context, page };
   };
 
   try {
@@ -180,7 +192,8 @@ export async function createBrowserContext(
  * Saves the current browser context's session state.
  */
 export async function saveSessionState(context: BrowserContext): Promise<void> {
-  const state = await context.storageState();
+  const attachedPage = attachedPages.get(context);
+  const state = attachedPage ? await captureTeamsPage(attachedPage) : await context.storageState();
   writeSessionState(state);
   // Clear cached region config so new session values are picked up
   clearRegionCache();
@@ -193,8 +206,20 @@ export async function closeBrowser(
   manager: BrowserManager,
   saveSession: boolean = true
 ): Promise<void> {
-  if (saveSession) {
-    await saveSessionState(manager.context);
+  try {
+    if (saveSession) {
+      await saveSessionState(manager.context);
+      if (manager.kind === 'attached') await manager.page.close().catch(() => {
+        log.warn('browser', 'The Teams login tab could not be closed; Chrome remains open.');
+      });
+    }
+  } finally {
+    if (manager.kind === 'attached') {
+      attachedPages.delete(manager.context);
+      // CDP close disconnects Playwright; closing the default context would close the user's Chrome.
+      await manager.browser.close();
+    } else {
+      await manager.context.close();
+    }
   }
-  await manager.context.close();
 }

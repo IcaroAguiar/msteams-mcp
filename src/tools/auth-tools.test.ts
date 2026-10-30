@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../auth/session-store.js', () => ({
   hasSessionState: vi.fn(() => true),
@@ -31,6 +31,7 @@ import {
 } from '../auth/token-extractor.js';
 import { refreshTokensViaHttp } from '../auth/token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
+import { ensureAuthenticated } from '../browser/auth.js';
 
 /** A session holding every core credential except the CSA (favourites) token. */
 function sessionMissingCsaToken(): void {
@@ -45,6 +46,33 @@ describe('teams_login core credential top-up', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(refreshTokensViaHttp).mockResolvedValue({ ok: true, value: undefined });
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('uses only a visible attached login and preserves its tab on failure', async () => {
+    vi.stubEnv('TEAMS_EXISTING_CHROME_DIR', '/fixture/chrome');
+    const manager = { kind: 'attached', page: {}, context: {} } as never;
+    vi.mocked(createBrowserContext).mockResolvedValue(manager);
+    vi.mocked(ensureAuthenticated).mockRejectedValueOnce(new Error('sign-in incomplete'));
+    await expect(loginTool.handler({ forceNew: false, refresh: true })).rejects.toThrow('sign-in incomplete');
+    expect(createBrowserContext).toHaveBeenCalledExactlyOnceWith({ headless: false });
+    expect(closeBrowser).toHaveBeenCalledWith(manager, false);
+    expect(clearAllLocalData).not.toHaveBeenCalled();
+  });
+
+  it('rejects forceNew on shared Chrome before clearing any local data', async () => {
+    vi.stubEnv('TEAMS_EXISTING_CHROME_DIR', '/fixture/chrome');
+    await expect(loginTool.handler({ forceNew: true })).rejects.toThrow('forceNew is unavailable');
+    expect(clearAllLocalData).not.toHaveBeenCalled();
+    expect(createBrowserContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original final-save behavior for an owned browser', async () => {
+    const manager = { kind: 'owned', page: {}, context: {} } as never;
+    vi.mocked(createBrowserContext).mockResolvedValue(manager);
+    vi.mocked(ensureAuthenticated).mockRejectedValueOnce(new Error('sign-in incomplete'));
+    await expect(loginTool.handler({ forceNew: true })).rejects.toThrow('sign-in incomplete');
+    expect(closeBrowser).toHaveBeenCalledWith(manager, true);
   });
 
   it('mints the missing CSA token when the session is otherwise valid', async () => {

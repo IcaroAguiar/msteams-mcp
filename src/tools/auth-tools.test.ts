@@ -51,12 +51,13 @@ describe('teams_login core credential top-up', () => {
 
   it('uses only a visible attached login and preserves its tab on failure', async () => {
     vi.stubEnv('TEAMS_EXISTING_CHROME_DIR', '/fixture/chrome');
-    const manager = { kind: 'attached', page: {}, context: {} } as never;
-    vi.mocked(createBrowserContext).mockResolvedValue(manager);
+    const manager = { kind: 'attached', page: {}, context: {} };
+    vi.mocked(createBrowserContext).mockResolvedValue(manager as never);
     vi.mocked(ensureAuthenticated).mockRejectedValueOnce(new Error('sign-in incomplete'));
     await expect(loginTool.handler({ forceNew: false, refresh: true })).rejects.toThrow('sign-in incomplete');
     expect(createBrowserContext).toHaveBeenCalledExactlyOnceWith({ headless: false });
     expect(closeBrowser).toHaveBeenCalledWith(manager, false);
+    expect(ensureAuthenticated).toHaveBeenCalledWith(manager.page, manager.context, expect.any(Function), false);
     expect(clearAllLocalData).not.toHaveBeenCalled();
   });
 
@@ -68,11 +69,12 @@ describe('teams_login core credential top-up', () => {
   });
 
   it('keeps the original final-save behavior for an owned browser', async () => {
-    const manager = { kind: 'owned', page: {}, context: {} } as never;
-    vi.mocked(createBrowserContext).mockResolvedValue(manager);
+    const manager = { kind: 'owned', page: {}, context: {} };
+    vi.mocked(createBrowserContext).mockResolvedValue(manager as never);
     vi.mocked(ensureAuthenticated).mockRejectedValueOnce(new Error('sign-in incomplete'));
     await expect(loginTool.handler({ forceNew: true })).rejects.toThrow('sign-in incomplete');
     expect(closeBrowser).toHaveBeenCalledWith(manager, true);
+    expect(ensureAuthenticated).toHaveBeenCalledWith(manager.page, manager.context, expect.any(Function), true);
   });
 
   it('mints the missing CSA token when the session is otherwise valid', async () => {

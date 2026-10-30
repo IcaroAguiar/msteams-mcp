@@ -173,7 +173,7 @@ async function loginInVisibleBrowser(): Promise<ToolResult> {
   const visible = await createBrowserContext({ headless: false });
   let authenticated = false;
   try {
-    await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg));
+    await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg), visible.kind === 'owned');
     authenticated = true;
   } finally {
     await closeBrowser(visible, authenticated || visible.kind === 'owned');

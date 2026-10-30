@@ -110,7 +110,16 @@ describe('existing Chrome profile', () => {
   });
   it('keeps connection errors free of the debugging endpoint', async () => {
     mocks.connect.mockRejectedValue(new Error('ws://127.0.0.1:19222/devtools/browser/private-id'));
-    await expect(createBrowserContext({ headless: false })).rejects.toThrow('Approve its debugging connection prompt');
+    const message = await createBrowserContext({ headless: false }).then(() => '', (error: Error) => error.message);
+    expect(message).toContain('Approve its debugging connection prompt');
+    expect(message).not.toMatch(/private-id|19222|ws:\/\//);
+  });
+  it('rejects a relative profile directory without echoing it', async () => {
+    vi.stubEnv('TEAMS_EXISTING_CHROME_DIR', 'private-relative-directory');
+    const message = await createBrowserContext({ headless: false }).then(() => '', (error: Error) => error.message);
+    expect(message).toContain('must be an absolute path');
+    expect(message).not.toContain('private-relative-directory');
+    expect(mocks.connect).not.toHaveBeenCalled();
   });
   it('cleans up its blank tab if foreground activation fails', async () => {
     const { page, browser } = chrome();

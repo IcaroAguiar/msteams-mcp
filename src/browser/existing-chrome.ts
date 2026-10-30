@@ -13,6 +13,7 @@ export function existingChromeRequested(): boolean {
 export async function connectExistingChrome(): Promise<Extract<BrowserManager, { kind: 'attached' }>> {
   const directory = process.env.TEAMS_EXISTING_CHROME_DIR;
   if (!directory) throw new Error('TEAMS_EXISTING_CHROME_DIR is not configured.');
+  if (!path.isAbsolute(directory)) throw new Error('TEAMS_EXISTING_CHROME_DIR must be an absolute path.');
   let endpoint: string;
   try {
     const [port, route] = fs.readFileSync(path.join(directory, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);

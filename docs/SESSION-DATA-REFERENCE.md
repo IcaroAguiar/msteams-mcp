@@ -466,11 +466,11 @@ If API calls fail with 404 or redirect errors:
 
 ### Encryption
 
-Session files are encrypted at rest using AES-256-GCM with a key derived from:
-- Hostname
-- Username
-
-This means session files are machine-specific and cannot be copied between computers.
+Session snapshots and token cache files use AES-256-GCM with a random 32-byte key
+held by the OS credential store (`msteams-mcp` / `session-encryption-v2`). Copying
+these files alone does not transfer the key. Version 1 snapshots using machine
+metadata are rejected without deletion; sign in again to capture a new snapshot.
+The persistent browser profile is separate authenticated data and needs OS protection.
 
 ---
 

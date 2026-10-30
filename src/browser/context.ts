@@ -54,8 +54,8 @@ function isProcessRunning(pid: number): boolean {
     // kill with signal 0 checks if process exists without killing it
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return !(error instanceof Error && 'code' in error && error.code === 'ESRCH');
   }
 }
 
@@ -93,21 +93,7 @@ function cleanupStaleSingletonLock(): boolean {
       return true;
     }
   } catch {
-    // On Windows or if readlink fails, try checking file age
-    // If the lock file is old and we can't verify the process, remove it
-    try {
-      const stats = fs.lstatSync(SINGLETON_LOCK_PATH);
-      const ageMs = Date.now() - stats.mtimeMs;
-      const oneHourMs = 60 * 60 * 1000;
-      
-      if (ageMs > oneHourMs) {
-        log.info('browser', `Removing old SingletonLock (${Math.round(ageMs / 60000)} minutes old)`);
-        fs.unlinkSync(SINGLETON_LOCK_PATH);
-        return true;
-      }
-    } catch {
-      // Can't read stats, leave it alone
-    }
+    return false;
   }
 
   return false;
@@ -175,18 +161,7 @@ export async function createBrowserContext(
     
     // Check if this is a profile lock error and try to recover
     if (errorMessage.includes('ProcessSingleton') || errorMessage.includes('SingletonLock')) {
-      log.warn('browser', 'Profile lock detected, attempting to clean up and retry...');
-      
-      // Force remove the lock file and retry once
-      try {
-        if (fs.existsSync(SINGLETON_LOCK_PATH)) {
-          fs.unlinkSync(SINGLETON_LOCK_PATH);
-          log.info('browser', 'Removed SingletonLock file, retrying browser launch...');
-          return await launchBrowser();
-        }
-      } catch (cleanupError) {
-        log.error('browser', `Failed to clean up SingletonLock: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
-      }
+      throw new Error('The Teams login profile is in use. Close its login window before retrying.');
     }
 
     const browserName = channel === 'msedge' ? 'Microsoft Edge' : 'Google Chrome';

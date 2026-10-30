@@ -367,7 +367,7 @@ const TOKEN_REFRESH_POLL_INTERVAL_MS = 1000;
  */
 async function checkBrowserTokenExpiry(page: Page): Promise<number> {
   try {
-    return await page.evaluate(() => {
+    const plaintextExpiry = await page.evaluate(() => {
       const now = Date.now();
       let bestExpiry = -1;
 
@@ -402,6 +402,16 @@ async function checkBrowserTokenExpiry(page: Page): Promise<number> {
 
       return bestExpiry;
     });
+    if (plaintextExpiry > 0) return plaintextExpiry;
+    const origin = await page.evaluate(() => ({
+      origin: location.origin,
+      localStorage: Object.keys(localStorage).map(name => ({ name, value: localStorage.getItem(name)! })),
+    }));
+    const token = extractSubstrateToken({
+      cookies: await page.context().cookies(origin.origin),
+      origins: [origin],
+    });
+    return token ? Math.round((token.expiry.getTime() - Date.now()) / 60000) : -1;
   } catch {
     return -1;
   }

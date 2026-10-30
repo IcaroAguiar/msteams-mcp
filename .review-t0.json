@@ -1,0 +1,8 @@
+{
+  "checks": [
+    { "name": "typecheck", "run": "npm run typecheck" },
+    { "name": "lint", "run": "npm run lint" },
+    { "name": "build", "run": "npm run build" }
+  ],
+  "tests": "npm test"
+}

@@ -30,6 +30,7 @@ import {
   type SessionState,
 } from './session-store.js';
 import { decodeJwtPayload } from './token-extractor.js';
+import { decodeMsalCache } from './msal-cache.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import * as log from '../utils/logger.js';
@@ -507,7 +508,8 @@ function updateSkypeCookies(
  * expired, Conditional Access policy requires interactive auth).
  */
 export async function refreshTokensViaHttp(resource: 'core' | OnDemandResource = 'core'): Promise<Result<void>> {
-  const state = readSessionState();
+  const savedState = readSessionState();
+  const state = savedState ? decodeMsalCache(savedState) : null;
   if (!state) {
     log.warn('token-refresh-http', 'No session state file found');
     return err(createError(

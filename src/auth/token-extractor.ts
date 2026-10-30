@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from './session-store.js';
 import { parseJwtProfile, type UserProfile } from '../utils/parsers.js';
+import { decodeMsalCache } from './msal-cache.js';
 import { MRI_TYPE_PREFIX, ORGID_PREFIX, MRI_ORGID_PREFIX, ASSIGNMENTS_APP_ID, GRAPH_AUDIENCES } from '../constants.js';
 
 // ============================================================================
@@ -61,7 +62,7 @@ type LocalStorageEntry = { name: string; value: string };
 function teamsLocalStorage(state?: SessionState): LocalStorageEntry[] {
   const sessionState = state ?? readSessionState();
   if (!sessionState) return [];
-  return getTeamsOrigin(sessionState)?.localStorage ?? [];
+  return getTeamsOrigin(decodeMsalCache(sessionState))?.localStorage ?? [];
 }
 
 // ============================================================================
@@ -196,7 +197,8 @@ function extractTokenByAudience(audiences: readonly string[], state?: SessionSta
 
 /** Remove only the rejected credential; leave other API tokens untouched. */
 export function invalidateAccessToken(token: string): void {
-  const state = readSessionState();
+  const savedState = readSessionState();
+  const state = savedState ? decodeMsalCache(savedState) : null;
   if (!state) return;
   const origin = getTeamsOrigin(state);
   if (!origin) return;
@@ -437,8 +439,9 @@ function extractMriFromAuthToken(token: string): string | null {
  * This searches all origins, not just teams.microsoft.com.
  */
 export function extractCsaToken(state?: SessionState): string | null {
-  const sessionState = state ?? readSessionState();
-  if (!sessionState) return null;
+  const savedState = state ?? readSessionState();
+  if (!savedState) return null;
+  const sessionState = decodeMsalCache(savedState);
 
   for (const origin of sessionState.origins ?? []) {
     for (const item of origin.localStorage ?? []) {

@@ -50,6 +50,24 @@ Add to your MCP client configuration (e.g., Claude Desktop, Windsurf, Cursor):
 
 That is it. `npx` downloads and runs the latest version. Ask your assistant to call `teams_login` once, complete the normal Microsoft sign-in in the browser, and then start using Teams.
 
+## Controlled local use
+
+Set `TEAMS_READ_ONLY=1` on the MCP server process to expose only chat-reading,
+people, status and normal login tools. Calls to hidden tools are rejected, as are
+`markRead: true` and `forceNew: true`. Email, downloads, assignments and message
+mutations remain unavailable. This is an execution policy, not reduced OAuth
+permissions: the captured account session remains sensitive.
+
+Session snapshots use AES-GCM with a random key stored in the operating system
+credential store (`msteams-mcp` / `session-encryption-v2`). Linux requires Secret
+Service. Old machine-derived snapshots are rejected; sign in again to capture a
+new snapshot. The persistent Chromium profile is separate from this encryption
+and must be protected as authenticated browser data.
+
+Requests sharing a session directory are serialized between local processes.
+`TEAMS_CONFIG_DIR` can select an absolute session directory; its default remains
+`~/.teams-mcp-server`. Do not share this directory over a network filesystem.
+
 ## How it works
 
 This server calls Microsoft's Teams services directly (Substrate, chatsvc, CSA), using the authenticated session created by the Teams web app.

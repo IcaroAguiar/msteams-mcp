@@ -20,7 +20,7 @@ vi.mock('../browser/context.js', () => ({ createBrowserContext: vi.fn(), closeBr
 vi.mock('../browser/auth.js', () => ({ ensureAuthenticated: vi.fn() }));
 vi.mock('../utils/auth-guards.js', () => ({ resetAssignmentsAvailability: vi.fn(), clearRegionCache: vi.fn() }));
 
-import { loginTool } from './auth-tools.js';
+import { loginTool, LoginInputSchema } from './auth-tools.js';
 import { clearAllLocalData } from '../auth/session-store.js';
 import {
   getSubstrateTokenStatus,
@@ -64,6 +64,14 @@ describe('teams_login core credential top-up', () => {
     await loginTool.handler({ forceNew: false });
 
     expect(refreshTokensViaHttp).not.toHaveBeenCalled();
+  });
+
+  it('rechecks apparently valid credentials without deleting the profile', async () => {
+    sessionMissingCsaToken();
+    vi.mocked(createBrowserContext).mockRejectedValueOnce(new Error('fixture browser requested'));
+    await expect(loginTool.handler(LoginInputSchema.parse({ refresh: true })))
+      .rejects.toThrow('fixture browser requested');
+    expect(clearAllLocalData).not.toHaveBeenCalled();
   });
 
   it('tops up after a forced browser login leaves the CSA token behind', async () => {

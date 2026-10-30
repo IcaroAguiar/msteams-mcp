@@ -34,6 +34,7 @@ import { ensureAuthenticated } from '../browser/auth.js';
 
 export const LoginInputSchema = z.object({
   forceNew: z.boolean().optional().default(false),
+  refresh: z.boolean().optional(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +47,10 @@ const loginToolDefinition: Tool = {
   inputSchema: {
     type: 'object',
     properties: {
+      refresh: {
+        type: 'boolean',
+        description: 'Recheck authentication in the existing browser profile even when cached tokens look valid. Does not delete local data.',
+      },
       forceNew: {
         type: 'boolean',
         description: 'Delete all previous login data (browser profile, cookies, saved session, every previously signed-in account) and sign in from scratch in a visible browser. Use to switch accounts or recover a broken session (default: false)',
@@ -113,7 +118,7 @@ async function handleLogin(
 
   // Fast path: if tokens are still valid, skip browser entirely
   const tokenStatus = getSubstrateTokenStatus();
-  if (tokenStatus.hasToken && tokenStatus.minutesRemaining! >= TOKEN_VALID_THRESHOLD_MINUTES) {
+  if (!input.refresh && tokenStatus.hasToken && tokenStatus.minutesRemaining! >= TOKEN_VALID_THRESHOLD_MINUTES) {
     await fillCoreCredentialGaps();
     return {
       success: true,

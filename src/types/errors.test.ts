@@ -16,7 +16,8 @@ describe('createError', () => {
     expect(error.code).toBe(ErrorCode.AUTH_REQUIRED);
     expect(error.message).toBe('Not authenticated');
     expect(error.retryable).toBe(false);
-    expect(error.suggestions).toContain('IMMEDIATELY call teams_login with { "forceNew": true } to authenticate');
+    expect(error.suggestions.join(' ')).toContain('teams_login');
+    expect(error.suggestions.join(' ')).not.toContain('forceNew');
   });
 
   it('creates retryable error for RATE_LIMITED by default', () => {

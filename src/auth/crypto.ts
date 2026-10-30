@@ -1,26 +1,29 @@
 /**
  * Encryption utilities for credential storage.
  * 
- * Uses machine-specific key derivation to encrypt sensitive data at rest.
- * This is not foolproof security, but significantly raises the bar compared
- * to plaintext storage.
+ * Uses a random key held by the operating system credential store.
+ * The persistent browser profile remains sensitive and needs OS protection.
  */
 
 import * as crypto from 'crypto';
-import * as os from 'os';
+import { Entry } from '@napi-rs/keyring';
 
 /** Algorithm for encryption. */
 const ALGORITHM = 'aes-256-gcm';
 
-/** Salt for key derivation. */
-const SALT = 'teams-mcp-credential-salt-v1';
-
-/** Derives an encryption key from machine-specific values. */
-function deriveKey(): Buffer {
-  // Combine hostname and username for machine-specific key
-  const machineId = `${os.hostname()}:${os.userInfo().username}`;
-  
-  return crypto.scryptSync(machineId, SALT, 32);
+function credentialKey(create: boolean): Buffer {
+  const entry = new Entry('msteams-mcp', 'session-encryption-v2', {
+    linux: { store: 'secret-service' },
+  });
+  let secret = entry.getPassword();
+  if (secret === null && create) {
+    secret = crypto.randomBytes(32).toString('hex');
+    entry.setPassword(secret);
+  }
+  if (secret === null || !/^[a-f0-9]{64}$/.test(secret)) {
+    throw new Error('Session encryption key is missing or invalid in the OS credential store.');
+  }
+  return Buffer.from(secret, 'hex');
 }
 
 /** Encrypted data format. */
@@ -39,7 +42,7 @@ export interface EncryptedData {
  * Encrypts a string value.
  */
 export function encrypt(plaintext: string): EncryptedData {
-  const key = deriveKey();
+  const key = credentialKey(true);
   const iv = crypto.randomBytes(16);
   
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
@@ -53,7 +56,7 @@ export function encrypt(plaintext: string): EncryptedData {
     iv: iv.toString('hex'),
     content: encrypted,
     tag: tag.toString('hex'),
-    version: 1,
+    version: 2,
   };
 }
 
@@ -63,11 +66,11 @@ export function encrypt(plaintext: string): EncryptedData {
  * @throws Error if decryption fails (wrong machine, corrupted data, etc.)
  */
 export function decrypt(data: EncryptedData): string {
-  if (data.version !== 1) {
-    throw new Error(`Unsupported encryption version: ${data.version}`);
+  if (data.version !== 2) {
+    throw new Error('Legacy or unsupported session encryption. Sign in again to capture a protected session.');
   }
   
-  const key = deriveKey();
+  const key = credentialKey(false);
   const iv = Buffer.from(data.iv, 'hex');
   const tag = Buffer.from(data.tag, 'hex');
   

@@ -13,7 +13,7 @@ import { ErrorCode, createError } from '../types/errors.js';
 interface RegistryEntry {
   definition: Tool;
   schema: z.ZodTypeAny;
-  handler: (input: z.output<z.ZodTypeAny>) => Promise<ToolResult>;
+  handler(input: z.output<z.ZodTypeAny>): Promise<ToolResult>;
 }
 
 import { searchTools } from './search-tools.js';
@@ -59,6 +59,17 @@ const toolsByName = new Map<string, RegistryEntry>(
   allTools.map(tool => [tool.definition.name, tool])
 );
 
+const readTools = new Set([
+  'teams_status', 'teams_login', 'teams_get_me', 'teams_search_people',
+  'teams_get_person', 'teams_list_chats', 'teams_search', 'teams_get_thread',
+  'teams_get_message', 'teams_get_chat', 'teams_get_unread',
+  'teams_find_channel', 'teams_get_favorites', 'teams_get_activity',
+]);
+
+function allowed(name: string): boolean {
+  return process.env.TEAMS_READ_ONLY !== '1' || readTools.has(name);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,20 +78,25 @@ const toolsByName = new Map<string, RegistryEntry>(
  * Gets all tool definitions for MCP ListTools.
  */
 export function getToolDefinitions(): Tool[] {
-  return allTools.map(tool => tool.definition);
+  return allTools.filter(tool => allowed(tool.definition.name)).map(tool => tool.definition);
 }
 
 /**
  * Gets a tool by name.
  */
 export function getTool(name: string): RegistryEntry | undefined {
-  return toolsByName.get(name);
+  return allowed(name) ? toolsByName.get(name) : undefined;
 }
 
 /**
  * Invokes a tool by name with the given arguments.
  */
 export async function invokeTool(name: string, args: unknown): Promise<ToolResult> {
+  if (!allowed(name) || (process.env.TEAMS_READ_ONLY === '1' && args !== null && typeof args === 'object'
+    && (('markRead' in args && args.markRead === true) || ('forceNew' in args && args.forceNew === true)))) {
+    return { success: false, error: createError(ErrorCode.ACCESS_DENIED,
+      'This operation is disabled by the read-only Teams policy.', { retryable: false }) };
+  }
   const tool = toolsByName.get(name);
   
   if (!tool) {
@@ -107,5 +123,5 @@ export async function invokeTool(name: string, args: unknown): Promise<ToolResul
  * Checks if a tool exists.
  */
 export function hasTool(name: string): boolean {
-  return toolsByName.has(name);
+  return getTool(name) !== undefined;
 }

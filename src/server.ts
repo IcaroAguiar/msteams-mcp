@@ -28,6 +28,7 @@ import {
   getUserProfile,
 } from './auth/token-extractor.js';
 import { refreshTokensViaBrowser } from './auth/token-refresh.js';
+import { withSessionLock } from './auth/session-lock.js';
 
 // API modules
 import { getFavorites } from './api/csa-api.js';
@@ -142,7 +143,7 @@ export class TeamsServer {
     });
 
     // Handle resource reading
-    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => withSessionLock(async () => {
       const { uri } = request.params;
 
       switch (uri) {
@@ -213,7 +214,7 @@ export class TeamsServer {
         default:
           throw new Error(`Unknown resource: ${uri}`);
       }
-    });
+    }));
 
     // Handle tool listing
     server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -221,7 +222,7 @@ export class TeamsServer {
     });
 
     // Handle tool calls (with auto-login retry for auth errors)
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => withSessionLock(async () => {
       const { name, arguments: args } = request.params;
 
       try {
@@ -253,12 +254,8 @@ export class TeamsServer {
           log.error('auto-login', 'Automatic re-authentication failed.');
           return this.formatError(createError(
             ErrorCode.AUTH_REQUIRED,
-            'ACTION REQUIRED: Teams session has expired and automatic re-authentication failed. You MUST call teams_login with forceNew: true to clear stale state and re-authenticate. Do NOT call teams_login without forceNew — it will return early without fixing the problem.',
-            { suggestions: [
-              'IMMEDIATELY call teams_login with { "forceNew": true }',
-              'After login succeeds, retry the original request',
-              'Do NOT skip this step or tell the user Teams is unavailable — authentication just needs refreshing',
-            ] }
+            'Teams authentication could not be renewed. Call teams_login with refresh: true; existing local data has been preserved.',
+            { suggestions: ['Call teams_login with { "refresh": true } to recheck sign-in; if access is still denied, verify tenant permissions'] }
           ));
         }
 
@@ -272,7 +269,12 @@ export class TeamsServer {
           { retryable: false }
         ));
       }
-    });
+    }).catch(error => {
+      const busy = error instanceof Error && 'code' in error && error.code === 'ELOCKED';
+      return this.formatError(createError(busy ? ErrorCode.RATE_LIMITED : ErrorCode.UNKNOWN,
+        busy ? 'Another Teams operation is active. Retry after it finishes.' : 'Could not access the local Teams session.',
+        { retryable: busy, retryAfterMs: busy ? 1000 : undefined }));
+    }));
 
     return server;
   }

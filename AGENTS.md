@@ -38,6 +38,8 @@ src/
 │   ├── crypto.ts         # AES-256-GCM encryption for credentials at rest
 │   ├── session-store.ts  # Secure session state storage with encryption
 │   ├── token-extractor.ts # Extract tokens from Playwright session state
+│   ├── msal-cache.ts     # Decode encrypted MSAL entries from the MCP browser snapshot
+│   ├── session-lock.ts   # Exclusive session access across local MCP processes
 │   ├── token-refresh.ts  # Token refresh orchestrator (HTTP-first, browser fallback)
 │   └── token-refresh-http.ts # Browserless token refresh via direct OAuth2 calls
 ├── api/                  # API client modules (one per API surface)
@@ -157,7 +159,7 @@ Two layers work together:
 1. **Persistent browser profile** (`browser-profile/`): retains Microsoft session cookies, extensions, and autofill across launches; enables silent headless re-auth.
 2. **Encrypted session state** (`session-state.json`): Playwright `storageState()` output from which tokens are extracted for browserless API calls.
 
-Session state and token cache files are encrypted at rest with AES-256-GCM using a key derived from machine-specific values (hostname + username), stored with 0o600 permissions.
+Session state and token cache files are encrypted at rest with AES-256-GCM using a random key held by the OS credential store (`msteams-mcp` / `session-encryption-v2`), with 0o600 file permissions. Legacy snapshots require signing in again; the browser profile remains separately sensitive.
 
 ## MCP Tools
 
@@ -242,7 +244,7 @@ When a roadmap item is completed, remove it entirely from `ROADMAP.md` - do not 
 
 ## Troubleshooting
 
-**Session/token expired**: call `teams_login` with `forceNew: true` (deletes the config directory and signs in from scratch), or `npm run cli -- login --force`.
+**Session/token expired**: call `teams_login` with `refresh: true`, or `npm run cli -- login --refresh true`, to recheck sign-in without deleting the profile. `forceNew: true` deletes local data and is unavailable in read-only mode.
 
 **Browser won't launch (login)**: ensure Chrome (macOS/Linux) or Edge (Windows) is installed; as a fallback run `npx playwright install chromium`; check for browser processes holding the profile lock.
 

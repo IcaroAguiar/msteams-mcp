@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { encrypt, decrypt } from './crypto.js';
 import { SESSION_EXPIRY_HOURS, TEAMS_HOSTS } from '../constants.js';
 import * as log from '../utils/logger.js';
@@ -22,9 +23,10 @@ import * as log from '../utils/logger.js';
  * - Windows: %APPDATA%\teams-mcp-server\
  * - macOS/Linux: ~/.teams-mcp-server/
  */
-export const CONFIG_DIR = process.platform === 'win32'
+export const CONFIG_DIR = process.env.TEAMS_CONFIG_DIR ?? (process.platform === 'win32'
   ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'teams-mcp-server')
-  : path.join(os.homedir(), '.teams-mcp-server');
+  : path.join(os.homedir(), '.teams-mcp-server'));
+if (!path.isAbsolute(CONFIG_DIR)) throw new Error('TEAMS_CONFIG_DIR must be an absolute path.');
 export const SESSION_STATE_PATH = path.join(CONFIG_DIR, 'session-state.json');
 export const TOKEN_CACHE_PATH = path.join(CONFIG_DIR, 'token-cache.json');
 
@@ -36,6 +38,7 @@ const SECURE_FILE_MODE = 0o600;
  */
 export function ensureConfigDir(): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  fs.chmodSync(CONFIG_DIR, 0o700);
 }
 
 /** Session state as stored by Playwright. */
@@ -70,10 +73,15 @@ function writeSecure(filePath: string, data: unknown): void {
   const json = JSON.stringify(data, null, 2);
   const encrypted = encrypt(json);
   
-  fs.writeFileSync(filePath, JSON.stringify(encrypted, null, 2), { 
-    mode: SECURE_FILE_MODE,
-    encoding: 'utf8',
-  });
+  const temporary = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(encrypted), {
+      mode: SECURE_FILE_MODE, encoding: 'utf8', flag: 'wx',
+    });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 /**

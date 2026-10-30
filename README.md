@@ -64,7 +64,10 @@ Service. Old machine-derived snapshots are rejected; sign in again to capture a
 new snapshot. The persistent Chromium profile is separate from this encryption
 and must be protected as authenticated browser data.
 
-Requests sharing a session directory are serialized between local processes.
+Requests sharing a session directory are serialized between local processes;
+simultaneous tool calls return a structured busy response rather than waiting.
+Use `teams_login` with `refresh: true` to recheck an apparently valid login
+without deleting the profile.
 `TEAMS_CONFIG_DIR` can select an absolute session directory; its default remains
 `~/.teams-mcp-server`. Do not share this directory over a network filesystem.
 

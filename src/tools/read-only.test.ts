@@ -63,4 +63,13 @@ describe('read-only MCP access', () => {
     expect(result.isError).not.toBe(true);
     expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('"exists": false') })]);
   });
+
+  it('returns a structured busy response while another operation owns the session', async () => {
+    const { withSessionLock } = await import('../auth/session-lock.js');
+    await withSessionLock(async () => {
+      const result = await client.callTool({ name: 'teams_status', arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('RATE_LIMITED') })]);
+    });
+  });
 });

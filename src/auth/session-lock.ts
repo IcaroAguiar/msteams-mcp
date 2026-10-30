@@ -8,7 +8,7 @@ export async function withSessionLock<T>(operation: () => Promise<T>): Promise<T
     lockfilePath: `${CONFIG_DIR}.operation.lock`,
     stale: 600_000,
     update: 1_000,
-    retries: { retries: 300, minTimeout: 1_000, maxTimeout: 1_000 },
+    retries: 0,
   });
   try {
     return await operation();

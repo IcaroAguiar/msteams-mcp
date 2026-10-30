@@ -405,7 +405,8 @@ async function checkBrowserTokenExpiry(page: Page): Promise<number> {
     if (plaintextExpiry > 0) return plaintextExpiry;
     const origin = await page.evaluate(() => ({
       origin: location.origin,
-      localStorage: Object.keys(localStorage).map(name => ({ name, value: localStorage.getItem(name)! })),
+      localStorage: Object.keys(localStorage).filter(name => name.startsWith('msal.'))
+        .map(name => ({ name, value: localStorage.getItem(name)! })),
     }));
     const token = extractSubstrateToken({
       cookies: await page.context().cookies(origin.origin),

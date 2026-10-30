@@ -254,8 +254,8 @@ export class TeamsServer {
           log.error('auto-login', 'Automatic re-authentication failed.');
           return this.formatError(createError(
             ErrorCode.AUTH_REQUIRED,
-            'Teams authentication could not be renewed. Call teams_login to sign in again; existing local data has been preserved.',
-            { suggestions: ['Call teams_login without forceNew to sign in again'] }
+            'Teams authentication could not be renewed. Call teams_login with refresh: true; existing local data has been preserved.',
+            { suggestions: ['Call teams_login with { "refresh": true } to recheck sign-in; if access is still denied, verify tenant permissions'] }
           ));
         }
 
@@ -269,6 +269,11 @@ export class TeamsServer {
           { retryable: false }
         ));
       }
+    }).catch(error => {
+      const busy = error instanceof Error && 'code' in error && error.code === 'ELOCKED';
+      return this.formatError(createError(busy ? ErrorCode.RATE_LIMITED : ErrorCode.UNKNOWN,
+        busy ? 'Another Teams operation is active. Retry after it finishes.' : 'Could not access the local Teams session.',
+        { retryable: busy, retryAfterMs: busy ? 1000 : undefined }));
     }));
 
     return server;

@@ -62,6 +62,7 @@ src/
 │   └── profile-api.ts    # Resolve MRIs to profiles (middleTier fetchShortProfile)
 ├── browser/              # Playwright browser automation (login only)
 │   ├── context.ts        # Persistent browser profile management
+│   ├── existing-chrome.ts # Opt-in connection to user-approved, running Chrome
 │   └── auth.ts           # Authentication detection and manual login handling
 ├── utils/
 │   ├── parsers.ts        # Pure parsing functions (barrel; testable submodules)
@@ -105,6 +106,13 @@ All tenant-specific config is extracted from the user's session localStorage, so
 ## Authentication
 
 ### Login flow
+
+`TEAMS_EXISTING_CHROME_DIR` opts into the user's already running Chrome 144+.
+Interactive login owns one new Teams tab and captures only that origin and its
+applicable cookies. `closeBrowser` disconnects CDP without closing the shared
+context; incomplete login leaves its tab open. Automatic refresh must not attach
+to this profile: HTTP refresh is followed by an explicit `teams_login` if needed.
+`forceNew` is rejected before deleting any data in this mode.
 
 All operations use direct API calls. A persistent browser profile (`~/.teams-mcp-server/browser-profile/`) stores Microsoft session cookies and MSAL tokens, enabling silent re-authentication.
 

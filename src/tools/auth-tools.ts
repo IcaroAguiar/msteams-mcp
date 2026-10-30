@@ -24,6 +24,7 @@ import {
 } from '../auth/token-extractor.js';
 import { refreshTokensViaHttp } from '../auth/token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
+import { existingChromeRequested } from '../browser/existing-chrome.js';
 import * as log from '../utils/logger.js';
 import { resetAssignmentsAvailability, clearRegionCache } from '../utils/auth-guards.js';
 import { ensureAuthenticated } from '../browser/auth.js';
@@ -108,6 +109,10 @@ async function handleLogin(
   // A fresh login may have changed what the account can access (e.g. new consent)
   resetAssignmentsAvailability();
 
+  if (input.forceNew && existingChromeRequested()) {
+    throw new Error('forceNew is unavailable with an existing Chrome profile. Switch accounts in Teams and use refresh: true.');
+  }
+
   if (input.forceNew) {
     // Start from nothing: no profile, cookies, MSAL cache or session from any
     // earlier account can survive to be mixed into the new login.
@@ -131,6 +136,8 @@ async function handleLogin(
       },
     };
   }
+
+  if (existingChromeRequested()) return loginInVisibleBrowser();
 
   // Headless-first strategy:
   // The persistent browser profile retains Microsoft's long-lived session cookies,
@@ -164,11 +171,12 @@ async function handleLogin(
 /** Opens a visible browser for the user to sign in, then saves the session. */
 async function loginInVisibleBrowser(): Promise<ToolResult> {
   const visible = await createBrowserContext({ headless: false });
+  let authenticated = false;
   try {
-    await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg));
+    await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg), visible.kind === 'owned');
+    authenticated = true;
   } finally {
-    // Close browser after login - we only need the saved session/tokens
-    await closeBrowser(visible, true);
+    await closeBrowser(visible, authenticated || visible.kind === 'owned');
   }
 
   await fillCoreCredentialGaps();

@@ -5,6 +5,7 @@ vi.mock('./context.js', () => ({ saveSessionState: vi.fn() }));
 vi.mock('../auth/token-extractor.js', () => ({ extractSubstrateToken: vi.fn() }));
 
 import { ensureAuthenticated, getAuthStatus, isTeamsUrl } from './auth.js';
+import { saveSessionState } from './context.js';
 
 /** A page on `url` with no Teams DOM markers and `tokenMinutes` left on MSAL. */
 function fakePage(url: string, tokenMinutes: number): Page {
@@ -69,11 +70,24 @@ describe('ensureAuthenticated', () => {
       waitForTimeout: async () => {},
     } as unknown as Page;
     const messages: string[] = [];
+    vi.mocked(saveSessionState).mockClear();
 
     await ensureAuthenticated(page, {} as never, msg => messages.push(msg), false, false);
 
     expect(messages).toContain('Waiting for manual login...');
     expect(messages).toContain('Authentication successful!');
     expect(tokenMinutes).toEqual([55]);
+    expect(saveSessionState).toHaveBeenCalledOnce();
+  });
+  it('preserves the saved session when a tokenless Teams tab closes during sign-in', async () => {
+    vi.mocked(saveSessionState).mockClear();
+    const page = {
+      goto: async () => null,
+      waitForURL: async () => { throw new Error('redirect timeout'); },
+      url: () => 'https://teams.cloud.microsoft/', evaluate: async () => -1,
+      waitForTimeout: async () => { throw new Error('tab closed'); },
+    } as unknown as Page;
+    await expect(ensureAuthenticated(page, {} as never, () => {}, false, false)).rejects.toThrow('tab closed');
+    expect(saveSessionState).not.toHaveBeenCalled();
   });
 });

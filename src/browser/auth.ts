@@ -482,15 +482,11 @@ export async function ensureAuthenticated(
   const status = await navigateToTeams(page);
 
   if (status.isAuthenticated) {
-    log('Teams loaded — saving session state.');
-    await saveSessionState(context);
-    
-    // Check if the saved tokens are actually valid
-    // Browser session cookies can outlive MSAL tokens (cookies last days, tokens ~1 hour)
-    const token = extractSubstrateToken();
-    const tokenValid = token && token.expiry.getTime() > Date.now();
+    log('Teams loaded — checking session tokens.');
+    const tokenValid = await checkBrowserTokenExpiry(page) > 0;
     
     if (tokenValid) {
+      await saveSessionState(context);
       log('Session state saved.');
       return;
     }

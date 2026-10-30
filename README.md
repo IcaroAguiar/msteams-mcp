@@ -71,6 +71,26 @@ without deleting the profile.
 `TEAMS_CONFIG_DIR` can select an absolute session directory; its default remains
 `~/.teams-mcp-server`. Do not share this directory over a network filesystem.
 
+### Sign in using your open Chrome profile
+
+Set `TEAMS_EXISTING_CHROME_DIR` to Chrome's **user data directory**, not a
+`Default` or `Profile N` subdirectory. On macOS this is usually
+`/Users/<you>/Library/Application Support/Google/Chrome`.
+With Chrome 144+ already running, enable remote debugging at
+`chrome://inspect/#remote-debugging`, call `teams_login` with `refresh: true`,
+and approve Chrome's connection prompt. Remote debugging grants browser-level
+access; allow only trusted clients. This mode never launches another browser.
+
+The MCP opens its own Teams sign-in tab, captures only that Teams origin and
+its applicable cookies, then disconnects. Successful sign-in closes only the
+tab it created. Failed or timed-out sign-in leaves the tab open, preserving
+your progress. Other tabs and the browser stay open. API calls still use the
+encrypted local session; if HTTP refresh cannot renew it, call `teams_login`
+again to reconnect interactively. Unset the variable to return to the separate
+MCP profile.
+`forceNew` is rejected in this mode: it cannot reset the user's Chrome login.
+Switch accounts in Teams itself, then call `teams_login` with `refresh: true`.
+
 ## How it works
 
 This server calls Microsoft's Teams services directly (Substrate, chatsvc, CSA), using the authenticated session created by the Teams web app.

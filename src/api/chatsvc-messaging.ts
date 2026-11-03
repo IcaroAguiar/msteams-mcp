@@ -15,6 +15,7 @@ import { stripHtml, extractLinks, buildMessageLink, buildOneOnOneConversationId,
 import { resolveNames } from './profile-api.js';
 import { SELF_CHAT_ID, MRI_ORGID_PREFIX, DEFAULT_WAIT_SECONDS, DEFAULT_WAIT_INTERVAL_SECONDS, MAX_WAIT_SECONDS } from '../constants.js';
 import { formatHumanReadableDate } from './chatsvc-common.js';
+import { extractAttachments, parseSystemEvent, type MessageAttachment } from '../utils/parsers-message-parts.js';
 import type { RawChatsvcMessage, RawConversationResponse, RawCreateThreadResponse } from '../types/api-responses.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +47,8 @@ export interface ThreadMessage {
   isFromMe?: boolean;
   messageLink?: string;
   links?: ExtractedLink[];
+  attachments?: MessageAttachment[];
+  systemEvent?: string;
   /** For channel messages: the ID of the thread root post (if this is a reply within a thread) */
   threadRootId?: string;
   /** True if this message is a reply within a channel thread (not a top-level post) */
@@ -353,15 +356,22 @@ export async function getMessage(
     return response;
   }
 
-  const msg = response.value.data;
-
-  const id = msg.id || msg.originalarrivaltime;
-  if (!id) {
+  const message = toThreadMessage(response.value.data, conversationId, auth.userMri);
+  if (!message) {
     return err(createError(
       ErrorCode.API_ERROR,
       'Message response missing ID'
     ));
   }
+
+  await enrichReactionNamesFromProfiles(message.reactions);
+
+  return ok(message);
+}
+
+function toThreadMessage(msg: RawChatsvcMessage, conversationId: string, userMri: string): ThreadMessage | null {
+  const id = msg.id || msg.originalarrivaltime;
+  if (!id) return null;
 
   const content = msg.content || '';
   const contentType = msg.messagetype || 'Text';
@@ -385,18 +395,18 @@ export async function getMessage(
       })
     : undefined;
 
-  const links = extractLinks(content);
-  const when = formatHumanReadableDate(timestamp);
+  const systemEvent = parseSystemEvent(contentType, content);
+  const links = systemEvent ? [] : extractLinks(content);
+  const attachments = systemEvent ? [] : extractAttachments(msg);
 
+  const when = formatHumanReadableDate(timestamp);
   const { reactions, reactionSummary } = parseReactions(msg);
 
-  // Enrich reactor names via fetchShortProfile batch API
-  await enrichReactionNamesFromProfiles(reactions);
-
-  return ok({
+  return {
     id,
-    content: stripHtml(content),
+    content: systemEvent ? systemEvent.summary : stripHtml(content),
     contentType,
+    systemEvent: systemEvent?.type,
     sender: {
       mri: fromMri,
       displayName,
@@ -405,14 +415,15 @@ export async function getMessage(
     when: when || undefined,
     conversationId,
     clientMessageId: msg.clientmessageid,
-    isFromMe: fromMri === auth.userMri,
+    isFromMe: fromMri === userMri,
     messageLink,
     links: links.length > 0 ? links : undefined,
+    attachments: attachments.length > 0 ? attachments : undefined,
     threadRootId: isThreadReply ? rootMessageId : undefined,
     isThreadReply: isThreadReply || undefined,
     reactions,
     reactionSummary,
-  });
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -482,63 +493,8 @@ export async function getThreadMessages(
       continue;
     }
 
-    const id = msg.id || msg.originalarrivaltime;
-    if (!id) continue;
-
-    const content = msg.content || '';
-    const contentType = msg.messagetype || 'Text';
-
-    const fromMri = msg.from || '';
-    const displayName = msg.imdisplayname || msg.displayName;
-
-    const timestamp = msg.originalarrivaltime ||
-      msg.composetime ||
-      timestampFromIdOrNow(id);
-
-    // Extract thread root ID for channel messages
-    // When rootMessageId differs from id, this message is a reply within a thread
-    const rootMessageId = msg.rootMessageId;
-    const isThreadReply = !!rootMessageId && rootMessageId !== id;
-
-    // Build message link with tenant context for reliable deep links
-    const messageLink = /^\d+$/.test(id)
-      ? buildMessageLink({
-          conversationId,
-          messageId: id,
-          tenantId: getTenantId() ?? undefined,
-          parentMessageId: isThreadReply ? rootMessageId : undefined,
-          teamsBaseUrl: getTeamsBaseUrl(),
-        })
-      : undefined;
-
-    // Extract links before stripping HTML
-    const links = extractLinks(content);
-
-    // Format human-readable date with day of week to help LLMs
-    const when = formatHumanReadableDate(timestamp);
-
-    const { reactions, reactionSummary } = parseReactions(msg);
-
-    messages.push({
-      id,
-      content: stripHtml(content),
-      contentType,
-      sender: {
-        mri: fromMri,
-        displayName,
-      },
-      timestamp,
-      when: when || undefined,
-      conversationId,
-      clientMessageId: msg.clientmessageid,
-      isFromMe: fromMri === auth.userMri,
-      messageLink,
-      links: links.length > 0 ? links : undefined,
-      threadRootId: isThreadReply ? rootMessageId : undefined,
-      isThreadReply: isThreadReply || undefined,
-      reactions,
-      reactionSummary,
-    });
+    const message = toThreadMessage(msg, conversationId, auth.userMri);
+    if (message) messages.push(message);
   }
 
   // Enrich reactor names via fetchShortProfile batch API.

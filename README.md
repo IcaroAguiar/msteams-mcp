@@ -245,11 +245,14 @@ See [CLI Usage](#cli-usage) for commands, or run `msteams` for the command list.
 | ------------------------ | ------------------------------------------------------------------ |
 | `teams_get_shared_files` | Get files and links shared in a conversation (supports pagination) |
 | `teams_download_file`    | Download a shared file or assignment attachment to a local path    |
+| `teams_download_attachment` | Save a message's pasted images and attached files to a private local folder |
 
 
 `teams_get_shared_files` returns both files (name, extension, URL, size) and links (URL, title), along with who shared each item. Works for channels, group chats, 1:1 chats, and meeting chats.
 
 `teams_download_file` takes a file's `webUrl` from `teams_get_shared_files`, or an attachment's `fileUrl` from `teams_get_assignment`. It downloads through Microsoft Graph using the Teams client's own access, so no extra sign-in is needed. Files stream straight to disk, never overwrite an existing file, and are removed if the download fails part-way. Links and Microsoft Forms aren't files and can't be downloaded.
+
+Messages from `teams_get_thread` and `teams_get_message` list pasted images and attached files in `attachments`; an image-only message has empty `content`. `teams_download_attachment` saves them under the session directory (`attachments/`, owner-only `0700` directories and `0600` files) and returns local paths, reusing earlier downloads. It is available in read-only mode because it changes nothing in Teams. Call, membership and rename events carry `systemEvent` and a readable summary in `content` instead of their raw payload.
 
 ### Assignments (education tenants only)
 

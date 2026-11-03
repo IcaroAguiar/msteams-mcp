@@ -133,11 +133,19 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
   });
 }
 
-/** Stream a pre-authenticated link to a new file, with an inactivity timeout. */
-async function streamToFile(
+// Only our own credentials may yield AUTH_EXPIRED, which triggers automatic re-authentication.
+function downloadErrorCode(status: number, sentCredentials: boolean): ErrorCode {
+  if (sentCredentials && status === 401) return ErrorCode.AUTH_EXPIRED;
+  if (sentCredentials && status === 403) return ErrorCode.ACCESS_DENIED;
+  if (sentCredentials && status === 404) return ErrorCode.NOT_FOUND;
+  return ErrorCode.API_ERROR;
+}
+
+export async function streamToFile(
   url: string,
   outputPath: string,
   expectedSize: number | undefined,
+  headers?: Record<string, string>,
 ): Promise<Result<{ size: number; sha256: string; contentType?: string }>> {
   let file;
   try {
@@ -157,12 +165,12 @@ async function streamToFile(
   };
   let complete = false;
   try {
-    // No Authorization header: the link is pre-authenticated. Refuse redirects
-    // so a sign-in page can never be saved as file contents.
-    const response = await fetch(url, { redirect: 'error', signal: controller.signal });
+    // Refuse redirects so a sign-in page can never be saved as file contents.
+    const response = await fetch(url, { headers, redirect: 'error', signal: controller.signal });
     if (!response.ok || !response.body) {
-      return err(createError(ErrorCode.API_ERROR, `File download failed: HTTP ${response.status}`,
-        { retryable: response.status >= 500 }));
+      return err(createError(downloadErrorCode(response.status, headers !== undefined),
+        `File download failed: HTTP ${response.status}`,
+        { retryable: response.status >= 500 || response.status === 429 }));
     }
     const hash = createHash('sha256');
     let size = 0;

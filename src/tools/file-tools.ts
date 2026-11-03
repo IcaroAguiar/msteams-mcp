@@ -9,6 +9,7 @@ import type { RegisteredTool, ToolResult } from './index.js';
 import { handleApiResult } from './index.js';
 import { getSharedFiles } from '../api/files-api.js';
 import { downloadFile } from '../api/graph-files-api.js';
+import { saveMessageAttachments } from '../api/attachments-api.js';
 import {
   DEFAULT_FILES_PAGE_SIZE,
   MAX_FILES_PAGE_SIZE,
@@ -22,6 +23,12 @@ export const GetSharedFilesInputSchema = z.object({
   conversationId: z.string().min(1),
   pageSize: z.number().min(1).max(MAX_FILES_PAGE_SIZE).optional().default(DEFAULT_FILES_PAGE_SIZE),
   skipToken: z.string().optional(),
+});
+
+export const DownloadAttachmentInputSchema = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  attachmentId: z.string().min(1).optional(),
 });
 
 export const DownloadFileInputSchema = z.object({
@@ -113,5 +120,33 @@ export const downloadFileTool: RegisteredTool<typeof DownloadFileInputSchema> = 
   handler: handleDownloadFile,
 };
 
+const downloadAttachmentToolDefinition: Tool = {
+  name: 'teams_download_attachment',
+  description:
+    "Save the images and files attached to a Teams message to a private local folder and return their paths, so you can open them (for example with a file Read tool to view a screenshot). Use the attachments listed by teams_get_thread or teams_get_message; an image-only message has empty content but lists its image there. Covers images pasted into chats and files uploaded to chats or channels. Read-only: nothing is sent to Teams. Files go to the Teams MCP data directory (owner-only permissions); a repeated request reuses the earlier file (cached: true). If one attachment fails, the others are still saved and the failure is reported next to them.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      conversationId: { type: 'string', description: 'The conversation ID containing the message.' },
+      messageId: { type: 'string', description: 'The numeric message ID (id from teams_get_thread or teams_get_message).' },
+      attachmentId: { type: 'string', description: 'Optional: only save this attachment (an attachments[].id). Omit to save all of the message\'s attachments.' },
+    },
+    required: ['conversationId', 'messageId'],
+  },
+};
+
+async function handleDownloadAttachment(
+  input: z.infer<typeof DownloadAttachmentInputSchema>
+): Promise<ToolResult> {
+  const result = await saveMessageAttachments(input.conversationId, input.messageId, input.attachmentId);
+  return handleApiResult(result, (value) => ({ ...value }));
+}
+
+export const downloadAttachmentTool: RegisteredTool<typeof DownloadAttachmentInputSchema> = {
+  definition: downloadAttachmentToolDefinition,
+  schema: DownloadAttachmentInputSchema,
+  handler: handleDownloadAttachment,
+};
+
 /** All file-related tools. */
-export const fileTools = [getSharedFilesTool, downloadFileTool];
+export const fileTools = [getSharedFilesTool, downloadFileTool, downloadAttachmentTool];

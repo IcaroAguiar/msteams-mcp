@@ -29,7 +29,11 @@ import { clearTokenCache } from './session-store.js';
 import { refreshTokensViaHttp, type OnDemandResource } from './token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
+import { existingChromeRequested } from '../browser/existing-chrome.js';
 import * as log from '../utils/logger.js';
+
+const CHROME_REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
+let chromeRetryAfter = 0;
 
 /** Serialize refreshes because both HTTP and browser flows replace session state. */
 let refreshQueue: Promise<unknown> = Promise.resolve();
@@ -92,7 +96,22 @@ async function refreshCoreTokens(): Promise<Result<void>> {
     : `HTTP refresh failed: ${httpResult.error.message}, falling back to browser (session cookies may still be valid)`);
 
   // ── Strategy 2: Browser refresh (fallback) ──────────────────────────
-  return refreshViaHeadlessBrowser();
+  if (!existingChromeRequested()) return refreshViaHeadlessBrowser();
+  // A network or service failure is not fixed by asking the user to approve Chrome.
+  if (!httpResult.ok && httpResult.error.retryable) return httpResult;
+
+  // Chrome asks to approve every debugging connection; an unanswered one must not stall each call.
+  if (Date.now() < chromeRetryAfter) {
+    return err(createError(ErrorCode.AUTH_EXPIRED,
+      'Automatic renewal through Chrome was not approved recently; it is paused for a few minutes.'));
+  }
+  const result = await refreshViaHeadlessBrowser();
+  chromeRetryAfter = result.ok ? 0 : Date.now() + CHROME_REFRESH_COOLDOWN_MS;
+  return result;
+}
+
+export function resetChromeRefreshCooldown(): void {
+  chromeRetryAfter = 0;
 }
 
 /**
@@ -110,6 +129,7 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
       msg => log.debug('token-refresh', msg), false, true);
 
     // ensureAuthenticated already saved the session
+    if (manager.kind === 'attached') await manager.page.close().catch(() => {});
     await closeBrowser(manager, false);
     manager = null;
     clearTokenCache();
@@ -123,6 +143,8 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     return ok(undefined);
   } catch (error) {
     if (manager) {
+      // A background tab must not outlive the attempt; an interactive login keeps its own tab.
+      if (manager.kind === 'attached') await manager.page.close().catch(() => {});
       await closeBrowser(manager, false).catch(() => {});
     }
     const message = error instanceof Error ? error.message : 'Unknown error';

@@ -141,8 +141,8 @@ export async function createBrowserContext(
   ensureConfigDir();
 
   if (existingChromeRequested()) {
-    if (headless) throw new Error('The existing Chrome profile requires an interactive teams_login call.');
-    const manager = await connectExistingChrome();
+    // In the user's Chrome, "headless" means a background tab.
+    const manager = await connectExistingChrome({ background: headless });
     attachedPages.set(manager.context, manager.page);
     return manager;
   }

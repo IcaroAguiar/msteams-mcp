@@ -100,6 +100,7 @@ export async function searchMessages(
     SUBSTRATE_API.search,
     {
       method: 'POST',
+      idempotent: true,
       headers: getBearerHeaders(token),
       body: JSON.stringify(body),
     }
@@ -211,6 +212,7 @@ export async function searchEmails(
     SUBSTRATE_API.search,
     {
       method: 'POST',
+      idempotent: true,
       headers: getBearerHeaders(token),
       body: JSON.stringify(body),
     }
@@ -286,6 +288,7 @@ export async function searchPeople(
     SUBSTRATE_API.peopleSearch,
     {
       method: 'POST',
+      idempotent: true,
       headers: getBearerHeaders(token),
       body: JSON.stringify(body),
     }
@@ -346,6 +349,7 @@ export async function getFrequentContacts(
     SUBSTRATE_API.frequentContacts,
     {
       method: 'POST',
+      idempotent: true,
       headers: getBearerHeaders(token),
       body: JSON.stringify(body),
     }
@@ -486,6 +490,7 @@ async function searchChannelsOrgWide(
     SUBSTRATE_API.channelSearch,
     {
       method: 'POST',
+      idempotent: true,
       headers: getBearerHeaders(token),
       body: JSON.stringify(body),
     }

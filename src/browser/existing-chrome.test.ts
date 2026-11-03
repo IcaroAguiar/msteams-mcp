@@ -104,9 +104,63 @@ describe('existing Chrome profile', () => {
     expect(mocks.connect).not.toHaveBeenCalled();
     expect(mocks.launch).not.toHaveBeenCalled();
   });
-  it('does not open shared Chrome during automatic refresh', async () => {
-    await expect(createBrowserContext({ headless: true })).rejects.toThrow('interactive teams_login');
-    expect(mocks.connect).not.toHaveBeenCalled();
+  function backgroundTarget(context: object, pages: Record<string, unknown>) {
+    const ids = new Map(Object.entries(pages).map(([id, p]) => [p, id]));
+    Object.assign(context, {
+      newCDPSession: vi.fn(async (p: unknown) => ({
+        send: vi.fn().mockResolvedValue({ targetInfo: { targetId: ids.get(p) } }),
+        detach: vi.fn().mockResolvedValue(undefined),
+      })),
+      waitForEvent: vi.fn(async (_event: string, { predicate }: { predicate: (p: unknown) => Promise<boolean> }) => {
+        for (const p of Object.values(pages)) if (await predicate(p)) return p;
+        throw new Error('Timeout 15000ms exceeded');
+      }),
+    });
+  }
+  it('renews automatically in a background tab that does not take focus', async () => {
+    const { context, page, browser } = chrome();
+    const usersTab = { close: vi.fn(), bringToFront: vi.fn() };
+    const session = { send: vi.fn().mockResolvedValue({ targetId: 'ours' }), detach: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(browser, { newBrowserCDPSession: vi.fn().mockResolvedValue(session) });
+    backgroundTarget(context, { theirs: usersTab, ours: page });
+
+    const manager = await createBrowserContext({ headless: true });
+
+    expect(manager.page).toBe(page);
+    expect(usersTab.close).not.toHaveBeenCalled();
+    expect(session.send).toHaveBeenCalledWith('Target.createTarget', { url: 'about:blank', background: true });
+    expect(session.detach).toHaveBeenCalledOnce();
+    expect(context.newPage).not.toHaveBeenCalled();
+    expect(page.bringToFront).not.toHaveBeenCalled();
+    expect(mocks.launch).not.toHaveBeenCalled();
+  });
+  it('closes the background tab it created when the page never appears', async () => {
+    const { context, browser } = chrome();
+    const session = { send: vi.fn().mockResolvedValueOnce({ targetId: 'orphan' }).mockResolvedValue({}), detach: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(browser, { newBrowserCDPSession: vi.fn().mockResolvedValue(session) });
+    backgroundTarget(context, {});
+
+    await expect(createBrowserContext({ headless: true })).rejects.toThrow('Timeout');
+
+    expect(session.send).toHaveBeenCalledWith('Target.closeTarget', { targetId: 'orphan' });
+    expect(browser.close).toHaveBeenCalledOnce();
+  });
+  it('fails cleanly when Chrome refuses to create the tab', async () => {
+    const { context, browser } = chrome();
+    const session = { send: vi.fn().mockRejectedValue(new Error('Target.createTarget refused')), detach: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(browser, { newBrowserCDPSession: vi.fn().mockResolvedValue(session) });
+    Object.assign(context, { waitForEvent: vi.fn(() => new Promise(() => {})) });
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      await expect(createBrowserContext({ headless: true })).rejects.toThrow('refused');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(session.detach).toHaveBeenCalledOnce();
+      expect(browser.close).toHaveBeenCalledOnce();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
   it('keeps connection errors free of the debugging endpoint', async () => {
     mocks.connect.mockRejectedValue(new Error('ws://127.0.0.1:19222/devtools/browser/private-id'));

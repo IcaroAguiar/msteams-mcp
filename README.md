@@ -85,8 +85,11 @@ The MCP opens its own Teams sign-in tab, captures only that Teams origin and
 its applicable cookies, then disconnects. Successful sign-in closes only the
 tab it created. Failed or timed-out sign-in leaves the tab open, preserving
 your progress. Other tabs and the browser stay open. API calls still use the
-encrypted local session; if HTTP refresh cannot renew it, call `teams_login`
-again to reconnect interactively. Unset the variable to return to the separate
+encrypted local session. Teams' refresh token expires 24 hours after the last
+browser sign-in; after that, the next tool call renews the session itself in a
+background Chrome tab, which needs only your approval of Chrome's connection
+prompt. If that is not approved, automatic attempts pause for ten minutes and
+the error asks for `teams_login` with `refresh: true`. Unset the variable to return to the separate
 MCP profile.
 `forceNew` is rejected in this mode: it cannot reset the user's Chrome login.
 Switch accounts in Teams itself, then call `teams_login` with `refresh: true`.

@@ -62,7 +62,9 @@ async function ensurePrivateDirectory(dir: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
-  // O_NOFOLLOW + O_DIRECTORY: a symlink or file in the way fails here instead of being chmod-ed through.
+  // Platforms without O_NOFOLLOW (Windows) rely on this check alone; elsewhere the flags close the race.
+  const info = await lstat(dir);
+  if (!info.isDirectory()) throw new Error(`${dir} is not a plain directory`);
   const handle = await open(dir, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
   try {
     await handle.chmod(0o700);

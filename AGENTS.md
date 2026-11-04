@@ -303,3 +303,8 @@ Conversation ID patterns: channels `19:xxx@thread.tacv2`; meetings `19:meeting_x
 - `playwright`: browser automation (login only)
 - `zod`: runtime input validation
 - `vitest`: unit testing (dev)
+
+## Known pitfalls
+
+- **docs-drift:** when changing session encryption, browser ownership or recovery behavior, update the authentication, troubleshooting and directory sections in the same PR. Compare documented recovery with the current auth-tool contracts and tests; reviewing prose does not require signing in or changing real sessions.
+- A path/script existence check cannot detect the semantic omissions in historical heads `8038cee8ace05a880490ff04c272ae04fc8ae46a` and `e41eb412fdd19be6cb728ac8b14011f0bbc6d6e9`. This is a judgment pitfall, not a newly enforced mechanical check.

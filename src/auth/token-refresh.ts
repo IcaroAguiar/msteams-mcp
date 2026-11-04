@@ -22,7 +22,7 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
-  getUserProfile,
+  getSessionIdentities,
   getValidAssignmentsToken,
   getValidGraphToken,
 } from './token-extractor.js';
@@ -118,13 +118,34 @@ export function resetChromeRefreshCooldown(): void {
  * Opens a headless browser with the persistent profile and lets MSAL
  * silently refresh tokens using its session cookies.
  */
-function accountOf(state: SessionState | null): string | null {
-  const profile = state ? getUserProfile(state) : null;
-  return profile ? `${profile.tenantId ?? ''}/${profile.id}` : null;
+/** True when both sessions carry exactly the same, non-empty set of accounts. */
+function sameAccount(previous: SessionState, current: SessionState | null): boolean {
+  if (!current) return false;
+  const before = getSessionIdentities(previous);
+  const after = getSessionIdentities(current);
+  return before.size > 0 && after.size === before.size && [...after].every(id => before.has(id));
+}
+
+/** Put the previous session back when a renewal left another account in its place. */
+function restoreIfAccountChanged(previous: SessionState | null): boolean {
+  if (!previous || sameAccount(previous, readSessionState())) return false;
+  try {
+    writeSessionState(previous);
+    clearTokenCache();
+  } catch (error) {
+    log.error('token-refresh', `Could not restore the previous session: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return true;
 }
 
 function redactUrls(message: string): string {
   return message.replace(/https?:\/\/[^\s?#)]+[^\s)]*/g, url => url.replace(/[?#].*$/, ''));
+}
+
+async function disposeManager(manager: Awaited<ReturnType<typeof createBrowserContext>>, strict = false): Promise<void> {
+  if (manager.kind === 'attached') await manager.page.close().catch(() => {});
+  const closing = closeBrowser(manager, false);
+  await (strict ? closing : closing.catch(() => {}));
 }
 
 async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
@@ -138,22 +159,20 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     await ensureAuthenticated(manager.page, manager.context,
       msg => log.debug('token-refresh', msg), false, true);
 
-    // ensureAuthenticated already saved the session
-    if (manager.kind === 'attached') await manager.page.close().catch(() => {});
-    await closeBrowser(manager, false);
-    manager = null;
-    clearTokenCache();
-
-    // Automatic renewal must never switch the account the tools act as; that needs an explicit teams_login.
-    const before = accountOf(previous);
-    if (previous && before && accountOf(readSessionState()) !== before) {
-      writeSessionState(previous);
-      clearTokenCache();
+    // ensureAuthenticated already saved the session. Automatic renewal must never switch the account
+    // the tools act as; that needs an explicit teams_login.
+    if (restoreIfAccountChanged(previous)) {
+      await disposeManager(manager);
+      manager = null;
       return err(createError(
         ErrorCode.AUTH_REQUIRED,
         'The browser is signed in to a different Teams account than this session. The previous session was kept; call teams_login with refresh: true to switch accounts.',
       ));
     }
+
+    await disposeManager(manager, true);
+    manager = null;
+    clearTokenCache();
 
     if (!extractSubstrateToken()) {
       return err(createError(
@@ -163,10 +182,8 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     }
     return ok(undefined);
   } catch (error) {
-    if (manager) {
-      if (manager.kind === 'attached') await manager.page.close().catch(() => {});
-      await closeBrowser(manager, false).catch(() => {});
-    }
+    if (manager) await disposeManager(manager);
+    restoreIfAccountChanged(previous);
     const message = redactUrls(error instanceof Error ? error.message : 'Unknown error');
     return err(createError(
       ErrorCode.UNKNOWN,

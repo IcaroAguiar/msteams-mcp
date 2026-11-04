@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./token-extractor.js', () => ({
   extractSubstrateToken: vi.fn(),
-  getUserProfile: vi.fn(),
+  getSessionIdentities: vi.fn(() => new Set<string>()),
 }));
 
 vi.mock('./session-store.js', () => ({
@@ -19,7 +19,7 @@ vi.mock('./token-refresh-http.js', () => ({
 }));
 
 import { refreshTokensViaBrowser, resetChromeRefreshCooldown } from './token-refresh.js';
-import { extractSubstrateToken, getUserProfile } from './token-extractor.js';
+import { extractSubstrateToken, getSessionIdentities } from './token-extractor.js';
 import { readSessionState, writeSessionState } from './session-store.js';
 import { refreshTokensViaHttp } from './token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
@@ -86,13 +86,16 @@ describe('refreshTokensViaBrowser', () => {
       expect(createBrowserContext).toHaveBeenCalledTimes(2);
     });
 
-    const profileOf = (id: string) => ({ id, mri: `8:orgid:${id}`, email: '', displayName: id, tenantId: 'tenant' });
+    const previous = { cookies: [], origins: [{ origin: 'a' }] };
+    const ids = (...accounts: string[]) => new Set(accounts.map(id => `tenant/${id}`));
+    function sessions(before: Set<string>, after: Set<string>) {
+      vi.mocked(readSessionState).mockReturnValueOnce(previous as never).mockReturnValue({ cookies: [], origins: [] } as never);
+      vi.mocked(getSessionIdentities).mockReturnValueOnce(before).mockReturnValue(after);
+      vi.mocked(extractSubstrateToken).mockReturnValue({ token: 'fresh', expiry: new Date(Date.now() + 3600_000) });
+    }
 
     it('keeps the previous session and refuses to replay when Chrome is signed in as another account', async () => {
-      const previous = { cookies: [], origins: [{ origin: 'a' }] };
-      vi.mocked(readSessionState).mockReturnValueOnce(previous as never).mockReturnValue({ cookies: [], origins: [] } as never);
-      vi.mocked(getUserProfile).mockReturnValueOnce(profileOf('A')).mockReturnValueOnce(profileOf('B'));
-      vi.mocked(extractSubstrateToken).mockReturnValue({ token: 'fresh', expiry: new Date(Date.now() + 3600_000) });
+      sessions(ids('A'), ids('B'));
 
       const result = await refreshTokensViaBrowser();
 
@@ -100,10 +103,31 @@ describe('refreshTokensViaBrowser', () => {
       expect(writeSessionState).toHaveBeenCalledWith(previous);
     });
 
+    it('rejects a cache that gained a second account, whatever token comes first', async () => {
+      sessions(ids('A'), ids('A', 'B'));
+
+      expect(await refreshTokensViaBrowser()).toMatchObject({ ok: false, error: { code: ErrorCode.AUTH_REQUIRED } });
+      expect(writeSessionState).toHaveBeenCalledWith(previous);
+    });
+
+    it('fails closed when the previous session carries no identity', async () => {
+      sessions(ids(), ids('A'));
+
+      expect(await refreshTokensViaBrowser()).toMatchObject({ ok: false, error: { code: ErrorCode.AUTH_REQUIRED } });
+    });
+
+    it('restores the previous session when cleanup fails after another account was saved', async () => {
+      sessions(ids('A'), ids('B'));
+      vi.mocked(closeBrowser).mockRejectedValueOnce(new Error('disconnect failed'));
+
+      const result = await refreshTokensViaBrowser();
+
+      expect(result.ok).toBe(false);
+      expect(writeSessionState).toHaveBeenCalledWith(previous);
+    });
+
     it('accepts a renewal that keeps the same account', async () => {
-      vi.mocked(readSessionState).mockReturnValue({ cookies: [], origins: [] } as never);
-      vi.mocked(getUserProfile).mockReturnValue(profileOf('A'));
-      vi.mocked(extractSubstrateToken).mockReturnValue({ token: 'fresh', expiry: new Date(Date.now() + 3600_000) });
+      sessions(ids('A'), ids('A'));
 
       expect(await refreshTokensViaBrowser()).toEqual({ ok: true, value: undefined });
       expect(writeSessionState).not.toHaveBeenCalled();

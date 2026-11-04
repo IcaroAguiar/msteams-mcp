@@ -484,6 +484,25 @@ export function getUserProfile(state?: SessionState): UserProfile | null {
 }
 
 /**
+ * Every `tenant/object-id` pair carried by a JWT in the Teams cache, expired or not and with or
+ * without a display name. Used to tell whether two sessions belong to the same account.
+ */
+export function getSessionIdentities(state?: SessionState): Set<string> {
+  const identities = new Set<string>();
+  for (const item of teamsLocalStorage(state)) {
+    try {
+      const entry = JSON.parse(item.value);
+      if (!isJwtToken(entry.secret)) continue;
+      const payload = decodeJwtPayload(entry.secret);
+      if (typeof payload?.oid === 'string') identities.add(`${typeof payload.tid === 'string' ? payload.tid : ''}/${payload.oid}`);
+    } catch {
+      continue;
+    }
+  }
+  return identities;
+}
+
+/**
  * Gets user's display name from session state.
  * Searches localStorage entries first, then falls back to JWT claims.
  */

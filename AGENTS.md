@@ -110,8 +110,11 @@ All tenant-specific config is extracted from the user's session localStorage, so
 `TEAMS_EXISTING_CHROME_DIR` opts into the user's already running Chrome 144+.
 Interactive login owns one new Teams tab and captures only that origin and its
 applicable cookies. `closeBrowser` disconnects CDP without closing the shared
-context; incomplete login leaves its tab open. Automatic refresh must not attach
-to this profile: HTTP refresh is followed by an explicit `teams_login` if needed.
+context; incomplete login leaves its tab open. When HTTP refresh fails with a
+non-retryable error (the 24 h refresh token expired), automatic refresh attaches
+to this profile and renews in a background tab it creates and closes; Chrome's
+connection prompt must be approved. A failed attempt pauses further Chrome
+attempts for ten minutes (`teams_login` resets the pause, which lives in process memory). The renewal is gated before the session is written (`guardSessionWrites`): a capture holding any account other than the stored single one is discarded, so nothing is ever rolled back; a stored session with several accounts is not renewed automatically. Switching accounts needs an explicit `teams_login`.
 `forceNew` is rejected before deleting any data in this mode.
 
 All operations use direct API calls. A persistent browser profile (`~/.teams-mcp-server/browser-profile/`) stores Microsoft session cookies and MSAL tokens, enabling silent re-authentication.
@@ -303,3 +306,8 @@ Conversation ID patterns: channels `19:xxx@thread.tacv2`; meetings `19:meeting_x
 - `playwright`: browser automation (login only)
 - `zod`: runtime input validation
 - `vitest`: unit testing (dev)
+
+## Known pitfalls
+
+- **docs-drift:** when changing session encryption, browser ownership or recovery behavior, update the authentication, troubleshooting and directory sections in the same PR. Compare documented recovery with the current auth-tool contracts and tests; reviewing prose does not require signing in or changing real sessions.
+- A path/script existence check cannot detect the semantic omissions in historical heads `8038cee8ace05a880490ff04c272ae04fc8ae46a` and `e41eb412fdd19be6cb728ac8b14011f0bbc6d6e9`. This is a judgment pitfall, not a newly enforced mechanical check.

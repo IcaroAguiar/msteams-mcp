@@ -483,6 +483,21 @@ export function getUserProfile(state?: SessionState): UserProfile | null {
   return null;
 }
 
+export function getSessionIdentities(state?: SessionState): Set<string> {
+  const identities = new Set<string>();
+  for (const item of teamsLocalStorage(state)) {
+    try {
+      const entry = JSON.parse(item.value);
+      if (!isJwtToken(entry.secret)) continue;
+      const payload = decodeJwtPayload(entry.secret);
+      if (typeof payload?.oid === 'string') identities.add(`${typeof payload.tid === 'string' ? payload.tid : ''}/${payload.oid}`);
+    } catch {
+      continue;
+    }
+  }
+  return identities;
+}
+
 /**
  * Gets user's display name from session state.
  * Searches localStorage entries first, then falls back to JWT claims.

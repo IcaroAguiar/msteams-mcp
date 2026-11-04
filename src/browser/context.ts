@@ -20,6 +20,7 @@ import {
   ensureConfigDir,
   CONFIG_DIR,
   writeSessionState,
+  type SessionState,
 } from '../auth/session-store.js';
 import { clearRegionCache } from '../utils/auth-guards.js';
 import * as log from '../utils/logger.js';
@@ -33,6 +34,11 @@ export type BrowserManager = BrowserSession & (
   { kind: 'owned' } | { kind: 'attached'; browser: Browser }
 );
 const attachedPages = new WeakMap<BrowserContext, Page>();
+const sessionGates = new WeakMap<BrowserContext, (state: SessionState) => void>();
+
+export function guardSessionWrites(context: BrowserContext, gate: (state: SessionState) => void): void {
+  sessionGates.set(context, gate);
+}
 
 /**
  * Directory for the persistent browser profile.
@@ -141,7 +147,6 @@ export async function createBrowserContext(
   ensureConfigDir();
 
   if (existingChromeRequested()) {
-    // In the user's Chrome, "headless" means a background tab.
     const manager = await connectExistingChrome({ background: headless });
     attachedPages.set(manager.context, manager.page);
     return manager;
@@ -194,6 +199,7 @@ export async function createBrowserContext(
 export async function saveSessionState(context: BrowserContext): Promise<void> {
   const attachedPage = attachedPages.get(context);
   const state = attachedPage ? await captureTeamsPage(attachedPage) : await context.storageState();
+  sessionGates.get(context)?.(state);
   writeSessionState(state);
   // Clear cached region config so new session values are picked up
   clearRegionCache();

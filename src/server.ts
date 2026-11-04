@@ -251,11 +251,12 @@ export class TeamsServer {
           }
 
           // Auto-login failed — return a strongly-worded error directing to forceNew
-          log.error('auto-login', 'Automatic re-authentication failed.');
+          log.error('auto-login', `Automatic re-authentication failed: ${refresh.error.message}`);
           return this.formatError(createError(
             ErrorCode.AUTH_REQUIRED,
-            'Teams authentication could not be renewed. Call teams_login with refresh: true; existing local data has been preserved.',
-            { suggestions: ['Call teams_login with { "refresh": true } to recheck sign-in; if access is still denied, verify tenant permissions'] }
+            `Teams sign-in could not be renewed automatically (${refresh.error.message}). ` +
+              'The Microsoft session needs the user: call teams_login with { "refresh": true }, which opens Teams in the browser for any sign-in prompt, then retry this tool. Existing local data has been preserved.',
+            { suggestions: ['Call teams_login with { "refresh": true }, ask the user to finish any sign-in prompt in the browser, then retry the original tool'] }
           ));
         }
 

@@ -21,6 +21,8 @@ export interface HttpOptions extends Omit<RequestInit, 'signal'> {
   retryBaseDelayMs?: number;
   /** Maximum delay between retries in ms (default: 10000). */
   retryMaxDelayMs?: number;
+  /** Safe to repeat after the request may have reached the server (default: by HTTP method). Mark read-only POSTs. */
+  idempotent?: boolean;
 }
 
 /** Successful HTTP response. */
@@ -45,6 +47,7 @@ export async function httpRequest<T = unknown>(
     maxRetries = 3,
     retryBaseDelayMs = 1000,
     retryMaxDelayMs = 10000,
+    idempotent = isIdempotent(options.method),
     ...fetchOptions
   } = options;
 
@@ -62,7 +65,7 @@ export async function httpRequest<T = unknown>(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs);
+      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, idempotent);
       
       if (result.ok) {
         return result;
@@ -75,8 +78,9 @@ export async function httpRequest<T = unknown>(
         rateLimitedUntil = Date.now() + result.error.retryAfterMs;
       }
 
-      // Don't retry non-retryable errors
-      if (!result.error.retryable) {
+      // A request that may have been applied is repeated only when repeating it is harmless;
+      // 429 means the server refused it unprocessed.
+      if (!result.error.retryable || (!idempotent && result.error.code !== ErrorCode.RATE_LIMITED)) {
         return result;
       }
 
@@ -117,7 +121,8 @@ export async function httpRequest<T = unknown>(
 async function fetchWithTimeout<T>(
   url: string,
   options: RequestInit,
-  timeoutMs: number
+  timeoutMs: number,
+  idempotent: boolean,
 ): Promise<Result<HttpResponse<T>>> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -167,17 +172,16 @@ async function fetchWithTimeout<T>(
         return err(createError(
           ErrorCode.TIMEOUT,
           `Request timed out after ${timeoutMs}ms`,
-          { retryable: true }
+          { retryable: idempotent }
         ));
       }
 
-      if (error.message.includes('ECONNRESET') || 
-          error.message.includes('ETIMEDOUT') ||
-          error.message.includes('ENOTFOUND')) {
+      const networkCode = networkErrorCode(error);
+      if (networkCode) {
         return err(createError(
           ErrorCode.NETWORK_ERROR,
-          error.message,
-          { retryable: true }
+          networkCode === error.message ? error.message : `${error.message} (${networkCode})`,
+          { retryable: idempotent }
         ));
       }
     }
@@ -188,6 +192,27 @@ async function fetchWithTimeout<T>(
       { retryable: false }
     ));
   }
+}
+
+const NETWORK_CODES = [
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE',
+  'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CLOSED',
+];
+
+// Node's fetch rejects with `TypeError: fetch failed` and keeps the socket error code in `cause`.
+function networkErrorCode(error: Error): string | undefined {
+  for (let current: unknown = error, depth = 0; current instanceof Error && depth < 4; current = current.cause, depth++) {
+    const code = 'code' in current && typeof current.code === 'string' ? current.code : undefined;
+    if (code && NETWORK_CODES.includes(code)) return code;
+    const named = NETWORK_CODES.find(candidate => (current as Error).message.includes(candidate));
+    if (named) return named;
+  }
+  return error instanceof TypeError && error.message === 'fetch failed' ? 'fetch failed' : undefined;
+}
+
+function isIdempotent(method: string | undefined): boolean {
+  return ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'].includes((method ?? 'GET').toUpperCase());
 }
 
 /**

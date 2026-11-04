@@ -54,8 +54,9 @@ That is it. `npx` downloads and runs the latest version. Ask your assistant to c
 
 Set `TEAMS_READ_ONLY=1` on the MCP server process to expose only chat-reading,
 people, status and normal login tools. Calls to hidden tools are rejected, as are
-`markRead: true` and `forceNew: true`. Email, downloads, assignments and message
-mutations remain unavailable. This is an execution policy, not reduced OAuth
+`markRead: true` and `forceNew: true`. Email, `teams_download_file`, assignments and
+message mutations remain unavailable; `teams_download_attachment` stays available
+(it only writes to the private attachments folder, up to 100 MB per attachment). This is an execution policy, not reduced OAuth
 permissions: the captured account session remains sensitive.
 
 Session snapshots use AES-GCM with a random key stored in the operating system
@@ -85,8 +86,11 @@ The MCP opens its own Teams sign-in tab, captures only that Teams origin and
 its applicable cookies, then disconnects. Successful sign-in closes only the
 tab it created. Failed or timed-out sign-in leaves the tab open, preserving
 your progress. Other tabs and the browser stay open. API calls still use the
-encrypted local session; if HTTP refresh cannot renew it, call `teams_login`
-again to reconnect interactively. Unset the variable to return to the separate
+encrypted local session. Teams' refresh token expires 24 hours after the last
+browser sign-in; after that, the next tool call renews the session itself in a
+background Chrome tab, which needs only your approval of Chrome's connection
+prompt. If that is not approved, automatic attempts pause for ten minutes and
+the error asks for `teams_login` with `refresh: true`. Unset the variable to return to the separate
 MCP profile.
 `forceNew` is rejected in this mode: it cannot reset the user's Chrome login.
 Switch accounts in Teams itself, then call `teams_login` with `refresh: true`.
@@ -242,11 +246,14 @@ See [CLI Usage](#cli-usage) for commands, or run `msteams` for the command list.
 | ------------------------ | ------------------------------------------------------------------ |
 | `teams_get_shared_files` | Get files and links shared in a conversation (supports pagination) |
 | `teams_download_file`    | Download a shared file or assignment attachment to a local path    |
+| `teams_download_attachment` | Save a message's pasted images and attached files to a private local folder |
 
 
 `teams_get_shared_files` returns both files (name, extension, URL, size) and links (URL, title), along with who shared each item. Works for channels, group chats, 1:1 chats, and meeting chats.
 
 `teams_download_file` takes a file's `webUrl` from `teams_get_shared_files`, or an attachment's `fileUrl` from `teams_get_assignment`. It downloads through Microsoft Graph using the Teams client's own access, so no extra sign-in is needed. Files stream straight to disk, never overwrite an existing file, and are removed if the download fails part-way. Links and Microsoft Forms aren't files and can't be downloaded.
+
+Messages from `teams_get_thread` and `teams_get_message` list pasted images and attached files in `attachments`; an image-only message has empty `content`. `teams_download_attachment` saves them under the session directory (`attachments/`, owner-only `0700` directories and `0600` files) and returns local paths, reusing earlier downloads. Each attachment is capped at 100 MB; larger ones are reported as failed next to the others. It is available in read-only mode because it changes nothing in Teams. Call, membership and rename events carry `systemEvent` and a readable summary in `content` instead of their raw payload.
 
 ### Assignments (education tenants only)
 

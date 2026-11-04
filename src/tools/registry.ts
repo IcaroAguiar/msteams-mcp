@@ -64,6 +64,8 @@ const readTools = new Set([
   'teams_get_person', 'teams_list_chats', 'teams_search', 'teams_get_thread',
   'teams_get_message', 'teams_get_chat', 'teams_get_unread',
   'teams_find_channel', 'teams_get_favorites', 'teams_get_activity',
+  // Writes only to the private local attachments directory, never to Teams.
+  'teams_download_attachment',
 ]);
 
 function allowed(name: string): boolean {

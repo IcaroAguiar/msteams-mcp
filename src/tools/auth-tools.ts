@@ -23,6 +23,7 @@ import {
   extractSkypeSpacesToken,
 } from '../auth/token-extractor.js';
 import { refreshTokensViaHttp } from '../auth/token-refresh-http.js';
+import { resetChromeRefreshCooldown } from '../auth/token-refresh.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import { existingChromeRequested } from '../browser/existing-chrome.js';
 import * as log from '../utils/logger.js';
@@ -108,6 +109,7 @@ async function handleLogin(
 ): Promise<ToolResult> {
   // A fresh login may have changed what the account can access (e.g. new consent)
   resetAssignmentsAvailability();
+  resetChromeRefreshCooldown();
 
   if (input.forceNew && existingChromeRequested()) {
     throw new Error('forceNew is unavailable with an existing Chrome profile. Switch accounts in Teams and use refresh: true.');

@@ -172,6 +172,76 @@ describe('httpRequest', () => {
     expect(attempts).toBe(3);
   });
 
+  describe('network failures reported by Node fetch', () => {
+    const fetchFailed = (code?: string) => Object.assign(new TypeError('fetch failed'),
+      code ? { cause: Object.assign(new Error('socket hang up'), { code }) } : {});
+    const success = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    it('retries a GET that failed with "fetch failed" and succeeds', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(fetchFailed('UND_ERR_SOCKET')).mockResolvedValueOnce(success());
+
+      const result = await httpRequest('https://api.example.com/data', { retryBaseDelayMs: 1 });
+
+      expect(result.ok).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('classifies a bare "fetch failed" as a retryable network error', async () => {
+      vi.mocked(fetch).mockRejectedValue(fetchFailed());
+
+      const result = await httpRequest('https://api.example.com/data', { retryBaseDelayMs: 1 });
+
+      expect(result).toMatchObject({ ok: false, error: { code: 'NETWORK_ERROR', retryable: true } });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not repeat a POST whose connection dropped after it may have been sent', async () => {
+      vi.mocked(fetch).mockRejectedValue(fetchFailed('ECONNRESET'));
+
+      const result = await httpRequest('https://api.example.com/send', { method: 'POST', retryBaseDelayMs: 1 });
+
+      expect(result).toMatchObject({ ok: false, error: { code: 'NETWORK_ERROR', retryable: false } });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('repeats a read-only POST marked idempotent', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(fetchFailed('ECONNRESET')).mockResolvedValueOnce(success());
+
+      const result = await httpRequest('https://api.example.com/search', { method: 'POST', idempotent: true, retryBaseDelayMs: 1 });
+
+      expect(result.ok).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not repeat a POST that timed out', async () => {
+      vi.mocked(fetch).mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+
+      const result = await httpRequest('https://api.example.com/send', { method: 'POST', retryBaseDelayMs: 1 });
+
+      expect(result).toMatchObject({ ok: false, error: { code: 'TIMEOUT', retryable: false } });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // A refused connection may belong to a redirect that followed an applied POST.
+    it('does not repeat a POST even when the connection was refused', async () => {
+      vi.mocked(fetch).mockRejectedValue(fetchFailed('ECONNREFUSED'));
+
+      const result = await httpRequest('https://api.example.com/send', { method: 'POST', retryBaseDelayMs: 1 });
+
+      expect(result.ok).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not repeat a POST answered with a server error', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response('Bad Gateway', { status: 502 }));
+
+      const result = await httpRequest('https://api.example.com/send', { method: 'POST', retryBaseDelayMs: 1 });
+
+      expect(result).toMatchObject({ ok: false, error: { code: 'API_ERROR' } });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('does not retry on non-retryable errors like 400', async () => {
     let attempts = 0;
     vi.mocked(fetch).mockImplementation(() => {

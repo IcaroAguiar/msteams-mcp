@@ -69,6 +69,7 @@ export async function resolveProfiles(
     url,
     {
       method: 'POST',
+      idempotent: true,
       headers: getSkypeAuthHeaders(skypeToken, spacesToken, baseUrl),
       body: JSON.stringify(mris),
     }

@@ -22,14 +22,19 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
+  getSessionIdentities,
   getValidAssignmentsToken,
   getValidGraphToken,
 } from './token-extractor.js';
-import { clearTokenCache } from './session-store.js';
+import { clearTokenCache, readSessionState, type SessionState } from './session-store.js';
 import { refreshTokensViaHttp, type OnDemandResource } from './token-refresh-http.js';
-import { createBrowserContext, closeBrowser } from '../browser/context.js';
+import { createBrowserContext, closeBrowser, guardSessionWrites } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
+import { existingChromeRequested } from '../browser/existing-chrome.js';
 import * as log from '../utils/logger.js';
+
+const CHROME_REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
+let chromeRetryAfter = 0;
 
 /** Serialize refreshes because both HTTP and browser flows replace session state. */
 let refreshQueue: Promise<unknown> = Promise.resolve();
@@ -92,25 +97,58 @@ async function refreshCoreTokens(): Promise<Result<void>> {
     : `HTTP refresh failed: ${httpResult.error.message}, falling back to browser (session cookies may still be valid)`);
 
   // ── Strategy 2: Browser refresh (fallback) ──────────────────────────
-  return refreshViaHeadlessBrowser();
+  if (!existingChromeRequested()) return refreshViaHeadlessBrowser();
+  if (!httpResult.ok && httpResult.error.retryable) return httpResult;
+
+  // Chrome asks to approve every debugging connection; an unanswered one must not stall each call.
+  if (Date.now() < chromeRetryAfter) {
+    return err(createError(ErrorCode.AUTH_EXPIRED,
+      'Automatic renewal through Chrome failed recently (not approved, or Chrome unavailable); it is paused for ten minutes. Call teams_login with refresh: true.'));
+  }
+  const result = await refreshViaHeadlessBrowser();
+  chromeRetryAfter = result.ok ? 0 : Date.now() + CHROME_REFRESH_COOLDOWN_MS;
+  return result;
 }
 
-/**
- * Opens a headless browser with the persistent profile and lets MSAL
- * silently refresh tokens using its session cookies.
- */
-async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
-  let manager: Awaited<ReturnType<typeof createBrowserContext>> | null = null;
+export function resetChromeRefreshCooldown(): void {
+  chromeRetryAfter = 0;
+}
 
+class AccountChangedError extends Error {}
+
+function pinnedAccount(previous: SessionState | null): string | null {
+  const identities = previous ? getSessionIdentities(previous) : new Set<string>();
+  return identities.size === 1 ? [...identities][0] : null;
+}
+
+function redactUrls(message: string): string {
+  return message.replace(/https?:\/\/[^\s?#)]+[^\s)]*/g, url => url.replace(/[?#].*$/, ''));
+}
+
+async function disposeManager(manager: Awaited<ReturnType<typeof createBrowserContext>>, strict = false): Promise<void> {
+  if (manager.kind === 'attached') await manager.page.close().catch(() => {});
+  const closing = closeBrowser(manager, false);
+  await (strict ? closing : closing.catch(() => {}));
+}
+
+const ACCOUNT_CHANGED = 'The browser is signed in to a different Teams account, or the stored session holds several. The stored session was not changed; call teams_login with refresh: true to switch accounts.';
+
+async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
+  const account = pinnedAccount(readSessionState());
+  if (!account) return err(createError(ErrorCode.AUTH_REQUIRED, ACCOUNT_CHANGED));
+
+  let manager: Awaited<ReturnType<typeof createBrowserContext>> | null = null;
   try {
     manager = await createBrowserContext({ headless: true });
+    guardSessionWrites(manager.context, state => {
+      const identities = getSessionIdentities(state);
+      if (identities.size !== 1 || !identities.has(account)) throw new AccountChangedError();
+    });
 
-    // headless: true fails fast if user interaction is required
     await ensureAuthenticated(manager.page, manager.context,
       msg => log.debug('token-refresh', msg), false, true);
 
-    // ensureAuthenticated already saved the session
-    await closeBrowser(manager, false);
+    await disposeManager(manager, true);
     manager = null;
     clearTokenCache();
 
@@ -122,10 +160,9 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     }
     return ok(undefined);
   } catch (error) {
-    if (manager) {
-      await closeBrowser(manager, false).catch(() => {});
-    }
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    if (manager) await disposeManager(manager);
+    if (error instanceof AccountChangedError) return err(createError(ErrorCode.AUTH_REQUIRED, ACCOUNT_CHANGED));
+    const message = redactUrls(error instanceof Error ? error.message : 'Unknown error');
     return err(createError(
       ErrorCode.UNKNOWN,
       `Token refresh via browser failed: ${message}. Call teams_login to re-authenticate.`,

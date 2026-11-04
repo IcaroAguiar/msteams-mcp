@@ -483,10 +483,6 @@ export function getUserProfile(state?: SessionState): UserProfile | null {
   return null;
 }
 
-/**
- * Every `tenant/object-id` pair carried by a JWT in the Teams cache, expired or not and with or
- * without a display name. Used to tell whether two sessions belong to the same account.
- */
 export function getSessionIdentities(state?: SessionState): Set<string> {
   const identities = new Set<string>();
   for (const item of teamsLocalStorage(state)) {

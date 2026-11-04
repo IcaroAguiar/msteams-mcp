@@ -26,9 +26,9 @@ import {
   getValidAssignmentsToken,
   getValidGraphToken,
 } from './token-extractor.js';
-import { clearTokenCache, readSessionState, writeSessionState, type SessionState } from './session-store.js';
+import { clearTokenCache, readSessionState, type SessionState } from './session-store.js';
 import { refreshTokensViaHttp, type OnDemandResource } from './token-refresh-http.js';
-import { createBrowserContext, closeBrowser } from '../browser/context.js';
+import { createBrowserContext, closeBrowser, guardSessionWrites } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
 import { existingChromeRequested } from '../browser/existing-chrome.js';
 import * as log from '../utils/logger.js';
@@ -114,28 +114,11 @@ export function resetChromeRefreshCooldown(): void {
   chromeRetryAfter = 0;
 }
 
-/**
- * Opens a headless browser with the persistent profile and lets MSAL
- * silently refresh tokens using its session cookies.
- */
-/** True when both sessions carry exactly the same, non-empty set of accounts. */
-function sameAccount(previous: SessionState, current: SessionState | null): boolean {
-  if (!current) return false;
-  const before = getSessionIdentities(previous);
-  const after = getSessionIdentities(current);
-  return before.size > 0 && after.size === before.size && [...after].every(id => before.has(id));
-}
+class AccountChangedError extends Error {}
 
-/** Put the previous session back when a renewal left another account in its place. */
-function restoreIfAccountChanged(previous: SessionState | null): boolean {
-  if (!previous || sameAccount(previous, readSessionState())) return false;
-  try {
-    writeSessionState(previous);
-    clearTokenCache();
-  } catch (error) {
-    log.error('token-refresh', `Could not restore the previous session: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return true;
+function pinnedAccount(previous: SessionState | null): string | null {
+  const identities = previous ? getSessionIdentities(previous) : new Set<string>();
+  return identities.size === 1 ? [...identities][0] : null;
 }
 
 function redactUrls(message: string): string {
@@ -148,27 +131,22 @@ async function disposeManager(manager: Awaited<ReturnType<typeof createBrowserCo
   await (strict ? closing : closing.catch(() => {}));
 }
 
-async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
-  let manager: Awaited<ReturnType<typeof createBrowserContext>> | null = null;
-  const previous = readSessionState();
+const ACCOUNT_CHANGED = 'The browser is signed in to a different Teams account, or the stored session holds several. The stored session was not changed; call teams_login with refresh: true to switch accounts.';
 
+async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
+  const account = pinnedAccount(readSessionState());
+  if (!account) return err(createError(ErrorCode.AUTH_REQUIRED, ACCOUNT_CHANGED));
+
+  let manager: Awaited<ReturnType<typeof createBrowserContext>> | null = null;
   try {
     manager = await createBrowserContext({ headless: true });
+    guardSessionWrites(manager.context, state => {
+      const identities = getSessionIdentities(state);
+      if (identities.size !== 1 || !identities.has(account)) throw new AccountChangedError();
+    });
 
-    // headless: true fails fast if user interaction is required
     await ensureAuthenticated(manager.page, manager.context,
       msg => log.debug('token-refresh', msg), false, true);
-
-    // ensureAuthenticated already saved the session. Automatic renewal must never switch the account
-    // the tools act as; that needs an explicit teams_login.
-    if (restoreIfAccountChanged(previous)) {
-      await disposeManager(manager);
-      manager = null;
-      return err(createError(
-        ErrorCode.AUTH_REQUIRED,
-        'The browser is signed in to a different Teams account than this session. The previous session was kept; call teams_login with refresh: true to switch accounts.',
-      ));
-    }
 
     await disposeManager(manager, true);
     manager = null;
@@ -183,7 +161,7 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     return ok(undefined);
   } catch (error) {
     if (manager) await disposeManager(manager);
-    restoreIfAccountChanged(previous);
+    if (error instanceof AccountChangedError) return err(createError(ErrorCode.AUTH_REQUIRED, ACCOUNT_CHANGED));
     const message = redactUrls(error instanceof Error ? error.message : 'Unknown error');
     return err(createError(
       ErrorCode.UNKNOWN,

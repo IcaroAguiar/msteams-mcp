@@ -114,7 +114,7 @@ context; incomplete login leaves its tab open. When HTTP refresh fails with a
 non-retryable error (the 24 h refresh token expired), automatic refresh attaches
 to this profile and renews in a background tab it creates and closes; Chrome's
 connection prompt must be approved. A failed attempt pauses further Chrome
-attempts for ten minutes (`teams_login` resets the pause, which lives in process memory). A renewal that lands on a different account or tenant is rolled back to the previous session; switching accounts needs an explicit `teams_login`.
+attempts for ten minutes (`teams_login` resets the pause, which lives in process memory). The renewal is gated before the session is written (`guardSessionWrites`): a capture holding any account other than the stored single one is discarded, so nothing is ever rolled back; a stored session with several accounts is not renewed automatically. Switching accounts needs an explicit `teams_login`.
 `forceNew` is rejected before deleting any data in this mode.
 
 All operations use direct API calls. A persistent browser profile (`~/.teams-mcp-server/browser-profile/`) stores Microsoft session cookies and MSAL tokens, enabling silent re-authentication.

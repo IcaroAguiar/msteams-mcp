@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./token-extractor.js', () => ({
   extractSubstrateToken: vi.fn(),
+  getUserProfile: vi.fn(),
 }));
 
 vi.mock('./session-store.js', () => ({
   clearTokenCache: vi.fn(),
+  readSessionState: vi.fn(),
+  writeSessionState: vi.fn(),
 }));
 
 vi.mock('../browser/context.js', () => ({ createBrowserContext: vi.fn(), closeBrowser: vi.fn() }));
@@ -16,7 +19,8 @@ vi.mock('./token-refresh-http.js', () => ({
 }));
 
 import { refreshTokensViaBrowser, resetChromeRefreshCooldown } from './token-refresh.js';
-import { extractSubstrateToken } from './token-extractor.js';
+import { extractSubstrateToken, getUserProfile } from './token-extractor.js';
+import { readSessionState, writeSessionState } from './session-store.js';
 import { refreshTokensViaHttp } from './token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
@@ -80,6 +84,38 @@ describe('refreshTokensViaBrowser', () => {
       resetChromeRefreshCooldown();
       await refreshTokensViaBrowser();
       expect(createBrowserContext).toHaveBeenCalledTimes(2);
+    });
+
+    const profileOf = (id: string) => ({ id, mri: `8:orgid:${id}`, email: '', displayName: id, tenantId: 'tenant' });
+
+    it('keeps the previous session and refuses to replay when Chrome is signed in as another account', async () => {
+      const previous = { cookies: [], origins: [{ origin: 'a' }] };
+      vi.mocked(readSessionState).mockReturnValueOnce(previous as never).mockReturnValue({ cookies: [], origins: [] } as never);
+      vi.mocked(getUserProfile).mockReturnValueOnce(profileOf('A')).mockReturnValueOnce(profileOf('B'));
+      vi.mocked(extractSubstrateToken).mockReturnValue({ token: 'fresh', expiry: new Date(Date.now() + 3600_000) });
+
+      const result = await refreshTokensViaBrowser();
+
+      expect(result).toMatchObject({ ok: false, error: { code: ErrorCode.AUTH_REQUIRED, message: expect.stringContaining('different Teams account') } });
+      expect(writeSessionState).toHaveBeenCalledWith(previous);
+    });
+
+    it('accepts a renewal that keeps the same account', async () => {
+      vi.mocked(readSessionState).mockReturnValue({ cookies: [], origins: [] } as never);
+      vi.mocked(getUserProfile).mockReturnValue(profileOf('A'));
+      vi.mocked(extractSubstrateToken).mockReturnValue({ token: 'fresh', expiry: new Date(Date.now() + 3600_000) });
+
+      expect(await refreshTokensViaBrowser()).toEqual({ ok: true, value: undefined });
+      expect(writeSessionState).not.toHaveBeenCalled();
+    });
+
+    it('drops query strings and fragments from SSO URLs in the error', async () => {
+      vi.mocked(ensureAuthenticated).mockRejectedValueOnce(new Error('Headless SSO failed: Unexpected page state: https://idp.example/path?code=SECRET&state=x#token=SECRET2'));
+
+      const result = await refreshTokensViaBrowser();
+
+      expect(JSON.stringify(result)).toContain('https://idp.example/path');
+      expect(JSON.stringify(result)).not.toContain('SECRET');
     });
 
     it('does not ask for Chrome approval when HTTP refresh failed for a transient reason', async () => {

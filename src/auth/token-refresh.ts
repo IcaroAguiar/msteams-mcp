@@ -22,10 +22,11 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
+  getUserProfile,
   getValidAssignmentsToken,
   getValidGraphToken,
 } from './token-extractor.js';
-import { clearTokenCache } from './session-store.js';
+import { clearTokenCache, readSessionState, writeSessionState, type SessionState } from './session-store.js';
 import { refreshTokensViaHttp, type OnDemandResource } from './token-refresh-http.js';
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
@@ -118,8 +119,19 @@ export function resetChromeRefreshCooldown(): void {
  * Opens a headless browser with the persistent profile and lets MSAL
  * silently refresh tokens using its session cookies.
  */
+function accountOf(state: SessionState | null): string | null {
+  const profile = state ? getUserProfile(state) : null;
+  return profile ? `${profile.tenantId ?? ''}/${profile.id}` : null;
+}
+
+/** Strip query strings and fragments from URLs: SSO redirects can carry sensitive parameters. */
+function redactUrls(message: string): string {
+  return message.replace(/https?:\/\/[^\s?#)]+[^\s)]*/g, url => url.replace(/[?#].*$/, ''));
+}
+
 async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
   let manager: Awaited<ReturnType<typeof createBrowserContext>> | null = null;
+  const previous = readSessionState();
 
   try {
     manager = await createBrowserContext({ headless: true });
@@ -134,6 +146,17 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     manager = null;
     clearTokenCache();
 
+    // Automatic renewal must never switch the account the tools act as; that needs an explicit teams_login.
+    const before = accountOf(previous);
+    if (previous && before && accountOf(readSessionState()) !== before) {
+      writeSessionState(previous);
+      clearTokenCache();
+      return err(createError(
+        ErrorCode.AUTH_REQUIRED,
+        'The browser is signed in to a different Teams account than this session. The previous session was kept; call teams_login with refresh: true to switch accounts.',
+      ));
+    }
+
     if (!extractSubstrateToken()) {
       return err(createError(
         ErrorCode.AUTH_EXPIRED,
@@ -147,7 +170,7 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
       if (manager.kind === 'attached') await manager.page.close().catch(() => {});
       await closeBrowser(manager, false).catch(() => {});
     }
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const message = redactUrls(error instanceof Error ? error.message : 'Unknown error');
     return err(createError(
       ErrorCode.UNKNOWN,
       `Token refresh via browser failed: ${message}. Call teams_login to re-authenticate.`,

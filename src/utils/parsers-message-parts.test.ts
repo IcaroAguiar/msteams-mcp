@@ -106,3 +106,19 @@ describe('parseSystemEvent', () => {
       .toEqual({ type: 'history_disclosed_update', summary: 'Teams event: ThreadActivity/HistoryDisclosedUpdate' });
   });
 });
+
+describe('extractAttachments with malformed properties.files', () => {
+  it('skips entries with non-string fields and keeps the valid ones', () => {
+    const files = JSON.stringify([
+      { itemid: 42, fileName: 42, objectUrl: 'https://contoso.sharepoint.com/a.docx' },
+      { objectUrl: 7 },
+      null,
+      'text',
+      { fileInfo: 'x', objectUrl: 'https://contoso.sharepoint.com/b.docx' },
+      { itemid: 'ok', fileName: 'c.docx', objectUrl: 'https://contoso.sharepoint.com/c.docx' },
+    ]);
+    const found = extractAttachments({ id: '1', content: '', properties: { files } } as never);
+    expect(found.map(a => a.id)).toEqual(['file-1', 'file-5', 'ok']);
+    expect(found.map(a => a.name)).toEqual([undefined, undefined, 'c.docx']);
+  });
+});

@@ -21,6 +21,7 @@ import {
   generateClientMessageId,
   buildThreadMessagesUrl,
   cursorFromBackwardLink,
+  toThreadMessage,
 } from './chatsvc-messaging.js';
 import { MAX_WAIT_SECONDS } from '../constants.js';
 
@@ -429,5 +430,22 @@ describe('thread history cursor', () => {
     expect(cursorFromBackwardLink(undefined)).toBeUndefined();
     expect(cursorFromBackwardLink('not a url')).toBeUndefined();
     expect(cursorFromBackwardLink('https://x/messages?view=a&pageSize=5')).toBeUndefined();
+  });
+});
+
+describe('toThreadMessage links on system events', () => {
+  const link = 'https://contoso-my.sharepoint.com/personal/x/_layouts/15/stream.aspx?id=rec.mp4';
+  const raw = (messagetype: string, content: string) => ({ id: '1700000000000', messagetype, content, from: '8:orgid:x' });
+
+  it.each(['RichText/Media_CallRecording', 'RichText/Media_CallTranscript'])('keeps the link of a %s event', type => {
+    const message = toThreadMessage(raw(type, `<a href="${link}">open</a>`), '19:c@thread.v2', '8:orgid:me');
+    expect(message?.systemEvent).toMatch(/^call_(recording|transcript)$/);
+    expect(message?.links?.map(({ url }: { url: string }) => url)).toContain(link);
+  });
+
+  it('drops the links of other system events', () => {
+    const message = toThreadMessage(raw('Event/Call', `<ended/><a href="${link}">x</a>`), '19:c@thread.v2', '8:orgid:me');
+    expect(message?.systemEvent).toBe('call_ended');
+    expect(message?.links).toBeUndefined();
   });
 });

@@ -69,15 +69,7 @@ function uriObjects(content: string): MessageAttachment[] {
   return objects;
 }
 
-interface RawFile {
-  itemid?: string;
-  id?: string;
-  fileName?: string;
-  title?: string;
-  fileType?: string;
-  objectUrl?: string;
-  fileInfo?: { fileUrl?: string };
-}
+const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined);
 
 function sharedFiles(files: unknown): MessageAttachment[] {
   let list: unknown = files;
@@ -85,15 +77,18 @@ function sharedFiles(files: unknown): MessageAttachment[] {
     try { list = JSON.parse(files); } catch { return []; }
   }
   if (!Array.isArray(list)) return [];
-  return list.flatMap((raw: RawFile, index): MessageAttachment[] => {
-    const url = raw?.objectUrl || raw?.fileInfo?.fileUrl;
-    if (typeof url !== 'string' || !url.startsWith('https://')) return [];
+  return list.flatMap((raw: unknown, index): MessageAttachment[] => {
+    if (typeof raw !== 'object' || raw === null) return [];
+    const file = raw as Record<string, unknown>;
+    const fileInfo = typeof file.fileInfo === 'object' && file.fileInfo !== null ? file.fileInfo as Record<string, unknown> : {};
+    const url = text(file.objectUrl) ?? text(fileInfo.fileUrl);
+    if (!url?.startsWith('https://')) return [];
     return [{
-      id: raw.itemid || raw.id || `file-${index + 1}`,
+      id: text(file.itemid) ?? text(file.id) ?? `file-${index + 1}`,
       kind: 'file',
       source: 'sharepoint',
-      name: raw.fileName || raw.title || undefined,
-      type: raw.fileType || undefined,
+      name: text(file.fileName) ?? text(file.title),
+      type: text(file.fileType),
       url,
     }];
   });

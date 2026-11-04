@@ -192,6 +192,16 @@ describe('size limit', () => {
     expect(existsSync(out)).toBe(false);
   });
 
+  it('cancels the response when it rejects a declared length', async () => {
+    let cancelled = false;
+    fetchMock.mockImplementation(async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(1)); },
+      cancel() { cancelled = true; },
+    }), { headers: { 'content-length': '999' } }));
+    await streamToFile('https://example.test/x', join(dir, 'cancel'), undefined, undefined, 10);
+    expect(cancelled).toBe(true);
+  });
+
   it('stops a stream that outgrows the limit without declaring a length, and leaves no file', async () => {
     fetchMock.mockImplementation(async () => new Response(new ReadableStream({
       pull(controller) { controller.enqueue(new Uint8Array(4)); },

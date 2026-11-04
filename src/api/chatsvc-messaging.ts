@@ -369,7 +369,7 @@ export async function getMessage(
   return ok(message);
 }
 
-function toThreadMessage(msg: RawChatsvcMessage, conversationId: string, userMri: string): ThreadMessage | null {
+export function toThreadMessage(msg: RawChatsvcMessage, conversationId: string, userMri: string): ThreadMessage | null {
   const id = msg.id || msg.originalarrivaltime;
   if (!id) return null;
 
@@ -396,7 +396,8 @@ function toThreadMessage(msg: RawChatsvcMessage, conversationId: string, userMri
     : undefined;
 
   const systemEvent = parseSystemEvent(contentType, content);
-  const links = systemEvent ? [] : extractLinks(content);
+  const keepsLinks = !systemEvent || systemEvent.type === 'call_recording' || systemEvent.type === 'call_transcript';
+  const links = keepsLinks ? extractLinks(content) : [];
   const attachments = systemEvent ? [] : extractAttachments(msg);
 
   const when = formatHumanReadableDate(timestamp);

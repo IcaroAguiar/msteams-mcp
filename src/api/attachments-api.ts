@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { chmod, mkdir, readdir, rename, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import * as path from 'node:path';
 import { type Result, ok, err } from '../types/result.js';
 import { ErrorCode, createError, type McpError } from '../types/errors.js';
@@ -55,15 +56,27 @@ export function safeFileName(name: string): string {
   return cleaned.slice(0, MAX_NAME_LENGTH - extension.length) + extension;
 }
 
+async function ensurePrivateDirectory(dir: string): Promise<void> {
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  // O_NOFOLLOW + O_DIRECTORY: a symlink or file in the way fails here instead of being chmod-ed through.
+  const handle = await open(dir, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    await handle.chmod(0o700);
+  } finally {
+    await handle.close();
+  }
+}
+
 // Conversation IDs are hashed, never used as path segments.
 async function messageDirectory(conversationId: string, messageId: string): Promise<string> {
   ensureConfigDir();
   const conversationDir = path.join(ATTACHMENTS_DIR, shortHash(conversationId));
   const directory = path.join(conversationDir, messageId);
-  for (const dir of [ATTACHMENTS_DIR, conversationDir, directory]) {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    await chmod(dir, 0o700);
-  }
+  for (const dir of [ATTACHMENTS_DIR, conversationDir, directory]) await ensurePrivateDirectory(dir);
   return directory;
 }
 
@@ -72,9 +85,14 @@ function fileStem(attachment: MessageAttachment): string {
   return `${shortHash(attachment.id)}-${label}`;
 }
 
+// A cached entry counts only if it is a private regular file within the size limit; anything else is replaced.
 async function existingFile(directory: string, stem: string): Promise<string | undefined> {
-  const names = await readdir(directory);
-  return names.find(name => name === stem || name.startsWith(`${stem}.`));
+  for (const name of await readdir(directory)) {
+    if (name !== stem && !name.startsWith(`${stem}.`)) continue;
+    const info = await lstat(path.join(directory, name)).catch(() => undefined);
+    if (info?.isFile() && (info.mode & 0o077) === 0 && info.size <= MAX_ATTACHMENT_BYTES) return name;
+  }
+  return undefined;
 }
 
 async function withRetry<T>(attempt: () => Promise<Result<T>>): Promise<Result<T>> {
@@ -147,7 +165,13 @@ export async function saveMessageAttachments(
 
   const auth = requireMessageAuth();
   if (!auth.ok) return auth;
-  const directory = await messageDirectory(conversationId, messageId);
+  let directory: string;
+  try {
+    directory = await messageDirectory(conversationId, messageId);
+  } catch (error) {
+    return err(createError(ErrorCode.UNKNOWN,
+      `The attachments folder is not a private directory: ${error instanceof Error ? error.message : String(error)}`, { retryable: false }));
+  }
 
   const attachments: SavedAttachment[] = [];
   const errors: McpError[] = [];

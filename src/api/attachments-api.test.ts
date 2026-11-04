@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -181,5 +181,44 @@ describe('safeFileName', () => {
     const name = safeFileName(`${'x'.repeat(300)}.pdf`);
     expect(name).toHaveLength(120);
     expect(name.endsWith('.pdf')).toBe(true);
+  });
+});
+
+describe('private storage', () => {
+  const messageId = '1700000000000';
+
+  it('refuses to chmod or write through a symlinked attachments folder', async () => {
+    vi.mocked(getMessage).mockResolvedValue(ok(message([IMAGE])));
+    const outside = mkdtempSync(join(tmpdir(), 'teams-outside-'));
+    chmodSync(outside, 0o755);
+    mkdirSync(root.dir, { recursive: true });
+    symlinkSync(outside, ATTACHMENTS_DIR);
+
+    const result = await saveMessageAttachments(CONVERSATION, messageId);
+
+    expect(result).toMatchObject({ ok: false, error: { code: ErrorCode.UNKNOWN } });
+    expect((await stat(outside)).mode & 0o777).toBe(0o755);
+    expect(await readdir(outside)).toEqual([]);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('does not reuse a cached entry that is a symlink, group-readable or over the size limit', async () => {
+    vi.mocked(getMessage).mockResolvedValue(ok(message([IMAGE])));
+    const first = await saveMessageAttachments(CONVERSATION, messageId);
+    if (!first.ok) throw new Error('setup failed');
+    const saved = first.value.attachments[0].path!;
+
+    chmodSync(saved, 0o644);
+    const loose = await saveMessageAttachments(CONVERSATION, messageId);
+    expect(loose.ok && loose.value.attachments[0].cached).toBeFalsy();
+    expect((await stat(saved)).mode & 0o777).toBe(0o600);
+
+    rmSync(saved);
+    const target = join(root.dir, 'elsewhere');
+    writeFileSync(target, 'x');
+    symlinkSync(target, saved);
+    const linked = await saveMessageAttachments(CONVERSATION, messageId);
+    expect(linked.ok && linked.value.attachments[0].cached).toBeFalsy();
+    expect(await readFile(target, 'utf8')).toBe('x');
   });
 });

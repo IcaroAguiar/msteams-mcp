@@ -174,6 +174,7 @@ export async function streamToFile(
     timer = setTimeout(() => controller.abort(), DOWNLOAD_INACTIVITY_TIMEOUT_MS);
   };
   let complete = false;
+  let body: WebReadableStream<Uint8Array> | null = null;
   try {
     // Refuse redirects so a sign-in page can never be saved as file contents.
     const response = await fetch(url, { headers, redirect: 'error', signal: controller.signal });
@@ -182,6 +183,7 @@ export async function streamToFile(
         `File download failed: HTTP ${response.status}`,
         { retryable: response.status >= 500 || response.status === 429 }));
     }
+    body = response.body as WebReadableStream<Uint8Array>;
     const declared = Number(response.headers.get('content-length'));
     if (maxBytes !== undefined && declared > maxBytes) return tooLarge(declared, maxBytes);
     const hash = createHash('sha256');
@@ -212,6 +214,10 @@ export async function streamToFile(
       { retryable: true }));
   } finally {
     clearTimeout(timer);
+    if (!complete) {
+      controller.abort();
+      await body?.cancel().catch(() => {});
+    }
     await file.close().catch(() => {});
     if (!complete) await unlink(outputPath).catch(() => {});
   }

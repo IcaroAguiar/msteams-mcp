@@ -110,8 +110,11 @@ All tenant-specific config is extracted from the user's session localStorage, so
 `TEAMS_EXISTING_CHROME_DIR` opts into the user's already running Chrome 144+.
 Interactive login owns one new Teams tab and captures only that origin and its
 applicable cookies. `closeBrowser` disconnects CDP without closing the shared
-context; incomplete login leaves its tab open. Automatic refresh must not attach
-to this profile: HTTP refresh is followed by an explicit `teams_login` if needed.
+context; incomplete login leaves its tab open. When HTTP refresh fails with a
+non-retryable error (the 24 h refresh token expired), automatic refresh attaches
+to this profile and renews in a background tab it creates and closes; Chrome's
+connection prompt must be approved. A failed attempt pauses further Chrome
+attempts for ten minutes (`teams_login` resets the pause).
 `forceNew` is rejected before deleting any data in this mode.
 
 All operations use direct API calls. A persistent browser profile (`~/.teams-mcp-server/browser-profile/`) stores Microsoft session cookies and MSAL tokens, enabling silent re-authentication.

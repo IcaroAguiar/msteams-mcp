@@ -103,7 +103,7 @@ async function refreshCoreTokens(): Promise<Result<void>> {
   // Chrome asks to approve every debugging connection; an unanswered one must not stall each call.
   if (Date.now() < chromeRetryAfter) {
     return err(createError(ErrorCode.AUTH_EXPIRED,
-      'Automatic renewal through Chrome was not approved recently; it is paused for a few minutes.'));
+      'Automatic renewal through Chrome failed recently (not approved, or Chrome unavailable); it is paused for ten minutes. Call teams_login with refresh: true.'));
   }
   const result = await refreshViaHeadlessBrowser();
   chromeRetryAfter = result.ok ? 0 : Date.now() + CHROME_REFRESH_COOLDOWN_MS;

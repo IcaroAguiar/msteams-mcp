@@ -132,7 +132,7 @@ describe('saveMessageAttachments', () => {
 
     const result = await saveMessageAttachments(CONVERSATION, '1700000000000');
 
-    expect(downloadFile).toHaveBeenCalledWith(FILE.url, expect.stringMatching(/\.partial$/));
+    expect(downloadFile).toHaveBeenCalledWith(FILE.url, expect.stringMatching(/\.partial$/), 100 * 1024 * 1024);
     expect(result).toMatchObject({ ok: true, value: { attachments: [
       { id: IMAGE.id, error: { code: ErrorCode.NOT_FOUND } },
       { id: FILE.id, name: 'notes.md', contentType: 'text/markdown' },

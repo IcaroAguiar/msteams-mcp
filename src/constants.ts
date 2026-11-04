@@ -53,6 +53,9 @@ export const MAX_CHANNEL_LIMIT = 50;
 /** Cancel a file download after this long without receiving any data. */
 export const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 30000;
 
+/** Largest message attachment teams_download_attachment saves; senders choose what a message links. */
+export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
 /** Pause after showing progress overlay step (ms). */
 export const OVERLAY_STEP_PAUSE_MS = 1500;
 

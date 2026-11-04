@@ -9,7 +9,7 @@ import { requireGraphTokenAsync } from '../utils/auth-guards.js';
 import { invalidateAccessToken } from '../auth/token-extractor.js';
 import { ok, err } from '../types/result.js';
 import { ErrorCode, createError } from '../types/errors.js';
-import { downloadFile } from './graph-files-api.js';
+import { downloadFile, streamToFile } from './graph-files-api.js';
 
 vi.mock('../utils/http.js', () => ({ httpRequest: vi.fn() }));
 vi.mock('../utils/auth-guards.js', () => ({ requireGraphTokenAsync: vi.fn() }));
@@ -173,5 +173,36 @@ describe('downloadFile', () => {
     vi.mocked(requireGraphTokenAsync).mockResolvedValue(unavailable);
     expect(await downloadFile(FILE_URL, join(dir, 'x'))).toEqual(unavailable);
     expect(mockHttp).not.toHaveBeenCalled();
+  });
+});
+
+describe('size limit', () => {
+  const tooLarge = { ok: false, error: { code: ErrorCode.INVALID_INPUT, retryable: false } };
+
+  it('refuses a file whose reported size is over the limit before downloading it', async () => {
+    mockHttp.mockResolvedValue(item({ size: 11 }));
+    expect(await downloadFile(FILE_URL, join(dir, 'big'), 10)).toMatchObject(tooLarge);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a download whose content-length is over the limit and leaves no file', async () => {
+    fetchMock.mockImplementation(async () => new Response(BYTES, { headers: { 'content-length': '999' } }));
+    const out = join(dir, 'declared');
+    expect(await streamToFile('https://example.test/x', out, undefined, undefined, 10)).toMatchObject(tooLarge);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('stops a stream that outgrows the limit without declaring a length, and leaves no file', async () => {
+    fetchMock.mockImplementation(async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(4)); },
+    })));
+    const out = join(dir, 'endless');
+    expect(await streamToFile('https://example.test/x', out, undefined, undefined, 10)).toMatchObject(tooLarge);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('downloads a file within the limit', async () => {
+    mockHttp.mockResolvedValue(item());
+    expect(await downloadFile(FILE_URL, join(dir, 'ok'), BYTES.length)).toMatchObject({ ok: true });
   });
 });

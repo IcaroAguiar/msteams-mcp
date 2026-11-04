@@ -73,7 +73,7 @@ interface RawDriveItem {
  * URL. Streams to disk, verifies the byte count against Graph's reported size,
  * and removes the partial file on any failure.
  */
-export async function downloadFile(url: string, outputPath: string): Promise<Result<DownloadedFile>> {
+export async function downloadFile(url: string, outputPath: string, maxBytes?: number): Promise<Result<DownloadedFile>> {
   const itemUrl = toDriveItemUrl(url);
   if (!itemUrl) {
     return err(createError(ErrorCode.INVALID_INPUT,
@@ -115,6 +115,7 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
   if (item.currentUserRole?.blocksDownload) {
     return err(createError(ErrorCode.ACCESS_DENIED, 'The owner has blocked downloading this file', { retryable: false }));
   }
+  if (maxBytes !== undefined && item.size !== undefined && item.size > maxBytes) return tooLarge(item.size, maxBytes);
   const downloadUrl = item['@microsoft.graph.downloadUrl'];
   let downloadHost = '';
   try { downloadHost = downloadUrl ? new URL(downloadUrl).hostname : ''; } catch { /* handled below */ }
@@ -122,7 +123,7 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
     return err(createError(ErrorCode.API_ERROR, 'Microsoft Graph did not return a SharePoint download link for this file', { retryable: false }));
   }
 
-  const saved = await streamToFile(downloadUrl, outputPath, item.size);
+  const saved = await streamToFile(downloadUrl, outputPath, item.size, undefined, maxBytes);
   if (!saved.ok) return saved;
   return ok({
     name: item.name ?? '',
@@ -131,6 +132,14 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
     contentType: saved.value.contentType ?? item.file.mimeType ?? 'application/octet-stream',
     sha256: saved.value.sha256,
   });
+}
+
+class TooLargeError extends Error {}
+
+function tooLarge(size: number | undefined, maxBytes: number): Result<never> {
+  const seen = size === undefined ? 'more than the limit' : `${size} bytes`;
+  return err(createError(ErrorCode.INVALID_INPUT,
+    `The attachment is too large to save (${seen}; limit ${maxBytes} bytes)`, { retryable: false }));
 }
 
 // Only our own credentials may yield AUTH_EXPIRED, which triggers automatic re-authentication.
@@ -146,6 +155,7 @@ export async function streamToFile(
   outputPath: string,
   expectedSize: number | undefined,
   headers?: Record<string, string>,
+  maxBytes?: number,
 ): Promise<Result<{ size: number; sha256: string; contentType?: string }>> {
   let file;
   try {
@@ -172,13 +182,16 @@ export async function streamToFile(
         `File download failed: HTTP ${response.status}`,
         { retryable: response.status >= 500 || response.status === 429 }));
     }
+    const declared = Number(response.headers.get('content-length'));
+    if (maxBytes !== undefined && declared > maxBytes) return tooLarge(declared, maxBytes);
     const hash = createHash('sha256');
     let size = 0;
     const meter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         touch();
-        hash.update(chunk);
         size += chunk.length;
+        if (maxBytes !== undefined && size > maxBytes) return callback(new TooLargeError());
+        hash.update(chunk);
         callback(null, chunk);
       },
     });
@@ -190,6 +203,7 @@ export async function streamToFile(
     complete = true;
     return ok({ size, sha256: hash.digest('hex'), contentType: response.headers.get('content-type') ?? undefined });
   } catch (error) {
+    if (error instanceof TooLargeError && maxBytes !== undefined) return tooLarge(undefined, maxBytes);
     const timedOut = controller.signal.aborted;
     return err(createError(timedOut ? ErrorCode.TIMEOUT : ErrorCode.NETWORK_ERROR,
       timedOut

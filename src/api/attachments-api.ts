@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { type Result, ok, err } from '../types/result.js';
 import { ErrorCode, createError, type McpError } from '../types/errors.js';
 import { CONFIG_DIR, ensureConfigDir } from '../auth/session-store.js';
+import { MAX_ATTACHMENT_BYTES } from '../constants.js';
 import { requireMessageAuth } from '../utils/auth-guards.js';
 import { isTeamsMediaUrl, type MessageAttachment } from '../utils/parsers-message-parts.js';
 import { getMessage } from './chatsvc-messaging.js';
@@ -98,9 +99,9 @@ async function saveOne(attachment: MessageAttachment, directory: string, skypeTo
     if (!isTeamsMediaUrl(attachment.url)) {
       return err(createError(ErrorCode.INVALID_INPUT, 'The image is not stored in Teams media storage', { retryable: false }));
     }
-    saved = await withRetry(() => streamToFile(attachment.url, partial, undefined, { Authorization: `skype_token ${skypeToken}` }));
+    saved = await withRetry(() => streamToFile(attachment.url, partial, undefined, { Authorization: `skype_token ${skypeToken}` }, MAX_ATTACHMENT_BYTES));
   } else {
-    saved = await withRetry(() => downloadFile(attachment.url, partial));
+    saved = await withRetry(() => downloadFile(attachment.url, partial, MAX_ATTACHMENT_BYTES));
   }
   if (!saved.ok) return saved;
 

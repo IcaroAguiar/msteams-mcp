@@ -59,6 +59,7 @@ src/
 │   ├── tags-api.ts       # Channel tags (mt/part teams/{groupId}/tags)
 │   ├── assignments-api.ts # EDU Assignments (assignments.edu.cloud.microsoft, OneNote EDU)
 │   ├── graph-files-api.ts # File downloads via Microsoft Graph (shared files and assignment attachments)
+│   ├── attachments-api.ts # Saves message images/files to the private attachments directory (teams_download_attachment)
 │   └── profile-api.ts    # Resolve MRIs to profiles (middleTier fetchShortProfile)
 ├── browser/              # Playwright browser automation (login only)
 │   ├── context.ts        # Persistent browser profile management
@@ -272,7 +273,7 @@ Session files live in a per-user config directory (consistent regardless of invo
 - **macOS/Linux**: `~/.teams-mcp-server/`
 - **Windows**: `%APPDATA%\teams-mcp-server\`
 
-Contents: `session-state.json` (encrypted session), `token-cache.json` (encrypted tokens), `browser-profile/` (persistent Chrome/Edge profile). Dev-only: `./debug-output/` (gitignored screenshots/HTML). Reference docs: `docs/API-REFERENCE.md`, `docs/SESSION-DATA-REFERENCE.md`.
+Contents: `session-state.json` (encrypted session), `token-cache.json` (encrypted tokens), `browser-profile/` (persistent Chrome/Edge profile), `attachments/` (message attachments saved by `teams_download_attachment`: hashed conversation folder per message, `0700` directories, `0600` files, 100 MB cap per attachment via `MAX_ATTACHMENT_BYTES`). Dev-only: `./debug-output/` (gitignored screenshots/HTML). Reference docs: `docs/API-REFERENCE.md`, `docs/SESSION-DATA-REFERENCE.md`.
 
 ### Message deep links
 

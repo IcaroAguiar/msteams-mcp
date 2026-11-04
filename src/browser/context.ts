@@ -141,7 +141,6 @@ export async function createBrowserContext(
   ensureConfigDir();
 
   if (existingChromeRequested()) {
-    // In the user's Chrome, "headless" means a background tab.
     const manager = await connectExistingChrome({ background: headless });
     attachedPages.set(manager.context, manager.page);
     return manager;

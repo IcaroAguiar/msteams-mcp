@@ -98,7 +98,6 @@ async function refreshCoreTokens(): Promise<Result<void>> {
 
   // ── Strategy 2: Browser refresh (fallback) ──────────────────────────
   if (!existingChromeRequested()) return refreshViaHeadlessBrowser();
-  // A network or service failure is not fixed by asking the user to approve Chrome.
   if (!httpResult.ok && httpResult.error.retryable) return httpResult;
 
   // Chrome asks to approve every debugging connection; an unanswered one must not stall each call.
@@ -124,7 +123,6 @@ function accountOf(state: SessionState | null): string | null {
   return profile ? `${profile.tenantId ?? ''}/${profile.id}` : null;
 }
 
-/** Strip query strings and fragments from URLs: SSO redirects can carry sensitive parameters. */
 function redactUrls(message: string): string {
   return message.replace(/https?:\/\/[^\s?#)]+[^\s)]*/g, url => url.replace(/[?#].*$/, ''));
 }
@@ -166,7 +164,6 @@ async function refreshViaHeadlessBrowser(): Promise<Result<void>> {
     return ok(undefined);
   } catch (error) {
     if (manager) {
-      // A background tab must not outlive the attempt; an interactive login keeps its own tab.
       if (manager.kind === 'attached') await manager.page.close().catch(() => {});
       await closeBrowser(manager, false).catch(() => {});
     }

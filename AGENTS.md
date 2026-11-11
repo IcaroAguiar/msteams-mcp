@@ -22,6 +22,7 @@ src/
 │   ├── render.ts         # Generic response rendering, colour/TTY handling
 │   └── help.ts           # Generated command index and per-command help
 ├── server.ts             # MCP server (TeamsServer class) - delegates to tool registry
+├── http.ts               # Streamable HTTP transport (--http): one process, one MCP Server per client session
 ├── constants.ts          # Shared constants (page sizes, timeouts, thresholds)
 ├── tools/                # Tool handlers (modular design)
 │   ├── index.ts          # Tool context and type definitions
@@ -87,6 +88,7 @@ src/
 - **Error taxonomy**: Errors use machine-readable codes (`ErrorCode` enum), `retryable` flags, and `suggestions` arrays so LLMs can understand failures and recover.
 - **HTTP utilities**: A centralised client (`utils/http.ts`) provides retry with exponential backoff, timeouts, and rate-limit tracking. Use `httpRequest()` for all new API calls.
 - **Stateless server**: `TeamsServer` holds no browser; login and refresh open the persistent-profile browser, save the session, and close it. Tool handlers take only their validated input.
+- **HTTP mode**: `--http` or `TEAMS_MCP_HTTP_PORT` (host `TEAMS_MCP_HTTP_HOST`, default `127.0.0.1:47830`) serves `/mcp` to every local client from one process. `TEAMS_MCP_TOKEN` sets a bearer token (mandatory beyond loopback); `Host`/`Origin` must be loopback to block DNS rebinding. Tool calls queue in-process in `withSessionLock` (60 s max wait, then the RATE_LIMITED busy response) before the cross-process lockfile, which still refuses other processes at once.
 - **Tool registry**: Tools are grouped by category (`search-tools.ts`, `message-tools.ts`, etc.) and wired through `tools/registry.ts`.
 - **Auth guards**: `utils/auth-guards.ts` provides reusable, `Result`-returning auth checks plus cached `getTenantId()`, `getRegion()`, and `getTeamsBaseUrl()` helpers.
 - **Shared constants**: Magic numbers (page sizes, timeouts, thresholds) live in `constants.ts`.

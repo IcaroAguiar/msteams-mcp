@@ -6,9 +6,6 @@
  * via direct API calls — searching messages, sending replies, managing
  * favourites, calendar, files, and more. The browser is only used for
  * initial authentication.
- *
- * Default transport is stdio. `--http` (or TEAMS_MCP_HTTP_PORT) serves Streamable
- * HTTP so several clients can share one process.
  */
 
 import { runServer } from './server.js';

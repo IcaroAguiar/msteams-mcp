@@ -66,11 +66,16 @@ describe('read-only MCP access', () => {
   });
 
   it('returns a structured busy response while another operation owns the session', async () => {
-    const { withSessionLock } = await import('../auth/session-lock.js');
-    await withSessionLock(async () => {
+    const { lock } = await import('proper-lockfile');
+    const { CONFIG_DIR, ensureConfigDir } = await import('../auth/session-store.js');
+    ensureConfigDir();
+    const release = await lock(CONFIG_DIR, { realpath: false, lockfilePath: `${CONFIG_DIR}.operation.lock` });
+    try {
       const result = await client.callTool({ name: 'teams_status', arguments: {} });
       expect(result.isError).toBe(true);
       expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('RATE_LIMITED') })]);
-    });
+    } finally {
+      await release();
+    }
   });
 });

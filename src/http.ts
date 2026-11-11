@@ -13,7 +13,6 @@ export interface HttpOptions {
   host: string;
   port: number;
   token?: string;
-  /** Sessions with no request for this long are closed. */
   idleMs?: number;
 }
 

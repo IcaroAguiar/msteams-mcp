@@ -75,11 +75,6 @@ describe('http transport', () => {
     const { runHttpServer } = await import('./http.js');
     const short = await runHttpServer({ host: '127.0.0.1', port: 0, token, idleMs: 100 });
     const url = new URL(`http://127.0.0.1:${(short.address() as AddressInfo).port}/mcp`);
-    const open = () => {
-      const client = new Client({ name: 'idle', version: '1.0.0' });
-      return client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }))
-        .then(() => client);
-    };
     try {
       const headers = { Authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
       const init = await fetch(url, { method: 'POST', headers, body: JSON.stringify({
@@ -93,15 +88,25 @@ describe('http transport', () => {
         body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) });
       expect(after.status).toBe(404);
       const { withSessionLock } = await import('./auth/session-lock.js');
-      const busy = await open();
+      const init2 = await fetch(url, { method: 'POST', headers, body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'raw-busy', version: '1' } },
+      }) });
+      const busyId = init2.headers.get('mcp-session-id')!;
+      await init2.text();
+      const sessionHeaders = { ...headers, 'mcp-session-id': busyId, 'mcp-protocol-version': '2025-06-18' };
       let release!: () => void;
       const holder = withSessionLock(() => new Promise<void>((r) => { release = r; }));
-      const pending = busy.callTool({ name: 'teams_status', arguments: {} });
+      const pending = fetch(url, { method: 'POST', headers: sessionHeaders,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'teams_status', arguments: {} } }) })
+        .then((r) => r.text());
       await new Promise((r) => setTimeout(r, 400));
       release();
       await holder;
-      await expect(pending).resolves.toBeDefined();
-      await expect(busy.listTools()).resolves.toBeDefined();
+      expect(await pending).toContain('"id":2');
+      const still = await fetch(url, { method: 'POST', headers: sessionHeaders,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }) });
+      expect(still.status).toBe(200);
     } finally {
       short.close();
     }

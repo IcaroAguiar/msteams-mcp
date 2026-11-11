@@ -80,8 +80,8 @@ TEAMS_MCP_TOKEN=$(openssl rand -hex 32) node dist/index.js --http
 
 It listens on `http://127.0.0.1:47830/mcp` (`TEAMS_MCP_HTTP_PORT`,
 `TEAMS_MCP_HTTP_HOST`). Clients send `Authorization: Bearer <TEAMS_MCP_TOKEN>`;
-a token is required to bind beyond loopback. Requests whose `Host` or `Origin`
-is not loopback are refused. Sessions idle for 30 minutes with no request in
+a token is required to bind beyond loopback. On a loopback bind, requests whose
+`Host` is not loopback are refused; a non-loopback `Origin` is always refused. Sessions idle for 30 minutes with no request in
 flight are closed. `GET /health` (same token) reports the open session count.
 
 Use `teams_login` with `refresh: true` to recheck an apparently valid login

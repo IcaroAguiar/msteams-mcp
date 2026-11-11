@@ -49,3 +49,12 @@ it('queues concurrent operations in the same process instead of failing', async 
   await Promise.all([slow, fast]);
   expect(order).toEqual(['a:start', 'a:end', 'b']);
 });
+
+it('gives up with ELOCKED when the queue wait exceeds its limit', async () => {
+  let release!: () => void;
+  const holder = withSessionLock(() => new Promise<void>((r) => { release = r; }));
+  await expect(withSessionLock(async () => 'never', 20)).rejects.toMatchObject({ code: 'ELOCKED' });
+  release();
+  await holder;
+  await expect(withSessionLock(async () => 'after')).resolves.toBe('after');
+});

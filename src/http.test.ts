@@ -40,7 +40,7 @@ describe('http transport', () => {
     const [toolsA, toolsB] = await Promise.all([a.client.listTools(), b.client.listTools()]);
     expect(toolsA.tools.length).toBeGreaterThan(0);
     expect(toolsB.tools.map((t) => t.name)).toEqual(toolsA.tools.map((t) => t.name));
-    const health = await (await fetch(`${base}/health`)).json();
+    const health = await (await fetch(`${base}/health`, { headers: { Authorization: `Bearer ${token}` } })).json();
     expect(health.sessions).toBe(2);
     await Promise.all([a.client.close(), b.client.close()]);
   });
@@ -48,6 +48,27 @@ describe('http transport', () => {
   it('rejects a wrong bearer token', async () => {
     const { ready } = connect('wrong');
     await expect(ready).rejects.toThrow();
+  });
+
+  it('rejects a foreign Origin or Host (DNS rebinding)', async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    expect((await fetch(`${base}/health`, { headers: { ...headers, Origin: 'https://evil.example' } })).status).toBe(403);
+    const { request } = await import('node:http');
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(`${base}/health`, { headers: { ...headers, Host: 'evil.example' } }, (res) => resolve(res.statusCode ?? 0));
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it('answers malformed JSON with 400', async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{not json',
+    });
+    expect(res.status).toBe(400);
   });
 
   it('refuses a non-loopback bind without a token', async () => {

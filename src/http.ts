@@ -19,6 +19,11 @@ export interface HttpOptions {
 interface Session {
   transport: StreamableHTTPServerTransport;
   lastSeen: number;
+  openStreams: number;
+}
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -35,31 +40,41 @@ export async function runHttpServer(options: HttpOptions) {
   const sweep = setInterval(() => {
     const cutoff = Date.now() - idleMs;
     for (const session of sessions.values()) {
-      if (session.lastSeen < cutoff) void session.transport.close();
+      if (session.openStreams === 0 && session.lastSeen < cutoff) void session.transport.close();
     }
   }, 60_000);
   sweep.unref();
 
   const http = createHttpServer((req, res) => {
     handle(req, res).catch((error) => {
+      if (error instanceof HttpError) {
+        if (!res.headersSent) sendError(res, error.status, error.message);
+        return;
+      }
       log.error('http', `request failed: ${error instanceof Error ? error.message : String(error)}`);
       if (!res.headersSent) sendError(res, 500, 'Internal server error');
     });
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    // Host/Origin checks stop DNS rebinding from a browser page reaching the loopback port.
+    if (!allowedHost(req, options.host) || !allowedOrigin(req)) return sendError(res, 403, 'Forbidden');
     const url = new URL(req.url ?? '/', 'http://localhost');
+    if (!authorized(req, options.token)) return sendError(res, 401, 'Unauthorized');
     if (url.pathname === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, sessions: sessions.size }));
       return;
     }
     if (url.pathname !== '/mcp') return sendError(res, 404, 'Not found');
-    if (!authorized(req, options.token)) return sendError(res, 401, 'Unauthorized');
 
     const sessionId = header(req, 'mcp-session-id');
     const existing = sessionId ? sessions.get(sessionId) : undefined;
     if (existing) {
       existing.lastSeen = Date.now();
+      if (req.method === 'GET') {
+        existing.openStreams++;
+        res.once('close', () => { existing.openStreams--; existing.lastSeen = Date.now(); });
+      }
       const body = req.method === 'POST' ? await readJson(req) : undefined;
       await existing.transport.handleRequest(req, res, body);
       return;
@@ -72,7 +87,7 @@ export async function runHttpServer(options: HttpOptions) {
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => { sessions.set(id, { transport, lastSeen: Date.now() }); },
+      onsessioninitialized: (id) => { sessions.set(id, { transport, lastSeen: Date.now(), openStreams: 0 }); },
     });
     transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); };
     const server = await teams.createServer();
@@ -102,6 +117,22 @@ function header(req: IncomingMessage, name: string): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function allowedHost(req: IncomingMessage, bindHost: string): boolean {
+  if (!LOOPBACK.has(bindHost)) return true;
+  const host = (header(req, 'host') ?? '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return LOOPBACK.has(host);
+}
+
+function allowedOrigin(req: IncomingMessage): boolean {
+  const origin = header(req, 'origin');
+  if (!origin) return true;
+  try {
+    return LOOPBACK.has(new URL(origin).hostname.replace(/^\[|\]$/g, ''));
+  } catch {
+    return false;
+  }
+}
+
 function authorized(req: IncomingMessage, token: string | undefined): boolean {
   if (!token) return true;
   const given = Buffer.from(header(req, 'authorization') ?? '');
@@ -114,11 +145,16 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new Error('Request body too large');
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Request body too large');
     chunks.push(chunk as Buffer);
   }
   const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : undefined;
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new HttpError(400, 'Invalid JSON');
+  }
 }
 
 function sendError(res: ServerResponse, status: number, message: string) {

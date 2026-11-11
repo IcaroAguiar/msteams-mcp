@@ -65,8 +65,25 @@ Service. Old machine-derived snapshots are rejected; sign in again to capture a
 new snapshot. The persistent Chromium profile is separate from this encryption
 and must be protected as authenticated browser data.
 
-Requests sharing a session directory are serialized between local processes;
-simultaneous tool calls return a structured busy response rather than waiting.
+Requests sharing a session directory are serialized. Within one process, calls
+wait their turn (up to 60 s); a call from another local process while one is
+running returns a structured busy response rather than waiting.
+
+### Shared HTTP server
+
+One process can serve every local MCP client over Streamable HTTP instead of one
+stdio process per client:
+
+```bash
+TEAMS_MCP_TOKEN=$(openssl rand -hex 32) node dist/index.js --http
+```
+
+It listens on `http://127.0.0.1:47830/mcp` (`TEAMS_MCP_HTTP_PORT`,
+`TEAMS_MCP_HTTP_HOST`). Clients send `Authorization: Bearer <TEAMS_MCP_TOKEN>`;
+a token is required to bind beyond loopback. Requests whose `Host` or `Origin`
+is not loopback are refused. Sessions idle for 30 minutes with no request in
+flight are closed. `GET /health` (same token) reports the open session count.
+
 Use `teams_login` with `refresh: true` to recheck an apparently valid login
 without deleting the profile.
 `TEAMS_CONFIG_DIR` can select an absolute session directory; its default remains

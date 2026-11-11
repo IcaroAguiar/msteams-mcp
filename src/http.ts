@@ -19,7 +19,7 @@ export interface HttpOptions {
 interface Session {
   transport: StreamableHTTPServerTransport;
   lastSeen: number;
-  openStreams: number;
+  openRequests: number;
 }
 
 class HttpError extends Error {
@@ -40,9 +40,9 @@ export async function runHttpServer(options: HttpOptions) {
   const sweep = setInterval(() => {
     const cutoff = Date.now() - idleMs;
     for (const session of sessions.values()) {
-      if (session.openStreams === 0 && session.lastSeen < cutoff) void session.transport.close();
+      if (session.openRequests === 0 && session.lastSeen < cutoff) void session.transport.close();
     }
-  }, 60_000);
+  }, Math.min(60_000, idleMs));
   sweep.unref();
 
   const http = createHttpServer((req, res) => {
@@ -71,10 +71,8 @@ export async function runHttpServer(options: HttpOptions) {
     const existing = sessionId ? sessions.get(sessionId) : undefined;
     if (existing) {
       existing.lastSeen = Date.now();
-      if (req.method === 'GET') {
-        existing.openStreams++;
-        res.once('close', () => { existing.openStreams--; existing.lastSeen = Date.now(); });
-      }
+      existing.openRequests++;
+      res.once('close', () => { existing.openRequests--; existing.lastSeen = Date.now(); });
       const body = req.method === 'POST' ? await readJson(req) : undefined;
       await existing.transport.handleRequest(req, res, body);
       return;
@@ -87,7 +85,7 @@ export async function runHttpServer(options: HttpOptions) {
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => { sessions.set(id, { transport, lastSeen: Date.now(), openStreams: 0 }); },
+      onsessioninitialized: (id) => { sessions.set(id, { transport, lastSeen: Date.now(), openRequests: 0 }); },
     });
     transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); };
     const server = await teams.createServer();

@@ -41,3 +41,11 @@ it('releases the lock after an operation fails', async () => {
   await expect(withSessionLock(async () => { throw new Error('fixture failure'); })).rejects.toThrow('fixture failure');
   await expect(withSessionLock(async () => 'next operation')).resolves.toBe('next operation');
 });
+
+it('queues concurrent operations in the same process instead of failing', async () => {
+  const order: string[] = [];
+  const slow = withSessionLock(async () => { order.push('a:start'); await new Promise((r) => setTimeout(r, 50)); order.push('a:end'); });
+  const fast = withSessionLock(async () => { order.push('b'); });
+  await Promise.all([slow, fast]);
+  expect(order).toEqual(['a:start', 'a:end', 'b']);
+});

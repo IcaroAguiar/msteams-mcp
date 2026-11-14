@@ -1,41 +1,85 @@
+---
 name: CI
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Start work budget
+      shell: bash
+      run: echo "VERIFY_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.12'
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Run linting
+      run: npm run lint
+    - name: Run type checking
+      run: npm run typecheck
+    - name: Affected unit tests
+      shell: bash
+      env:
+        BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+      run: npx vitest run --changed "$BASE_SHA" --passWithNoTests --maxWorkers=2
+    - name: Work budget (300 seconds)
+      if: always()
+      shell: bash
+      run: |-
+        elapsed=$(( $(date +%s) - VERIFY_STARTED ))
+        echo "verify: ${elapsed}s / 300s"
+        [[ $elapsed -le 300 ]]
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name
+      == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci'))
+      && (github.event.action != 'labeled' || github.event.label.name == 'run-ci')
+    timeout-minutes: 10
   test:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
-        # Vite 7 (via Vitest) requires Node ^20.19.0 || >=22.12.0
-        node-version: ['20.19', '22.12']
-
+        node-version:
+        - '20.19'
+        - '22.12'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run linting
-        run: npm run lint
-
-      - name: Run type checking
-        run: npm run typecheck
-
-      - name: Run tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: "${{ matrix.node-version }}"
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Run linting
+      run: npm run lint
+    - name: Run type checking
+      run: npm run typecheck
+    - name: Run tests
+      run: npm test
+    - name: Build
+      run: npm run build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'run-full-ci') && (github.event.pull_request.head.repo.full_name
+      == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    timeout-minutes: 10
+'on':
+  pull_request:
+    branches:
+    - main
+    - master
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
+    - labeled
+  workflow_dispatch:
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref
+    }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}"
+  cancel-in-progress: true

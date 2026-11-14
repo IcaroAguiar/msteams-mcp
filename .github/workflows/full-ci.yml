@@ -1,0 +1,53 @@
+name: Full CI
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [labeled, synchronize, reopened]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'run-full-ci' && 'other' || 'main' }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+
+jobs:
+  test:
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'run-full-ci') && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    timeout-minutes: 30
+    runs-on: ${{ fromJSON(vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}
+
+    strategy:
+      matrix:
+        # Vite 7 (via Vitest) requires Node ^20.19.0 || >=22.12.0
+        node-version: ['20.19', '22.12']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

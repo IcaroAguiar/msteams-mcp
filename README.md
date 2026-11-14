@@ -453,3 +453,10 @@ See [AGENTS.md](AGENTS.md) for detailed architecture and contribution guidelines
 
 ---
 
+## CI
+
+Pull requests run one `verify` job with a 300-second work budget. Fork PRs
+need the `run-ci` label and a subsequent push or reopen; adding the label
+does not trigger `verify`. The `full-ci.yml` workflow runs the Node matrix,
+full tests and build with `run-full-ci`, push to `main`/`master`, or manual
+dispatch.

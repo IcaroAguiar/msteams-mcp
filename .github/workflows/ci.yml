@@ -3,19 +3,19 @@ name: CI
 on:
   pull_request:
     branches: [main, master]
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     if: >-
-      github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci')) && (github.event.action != 'labeled' || github.event.label.name == 'run-ci')
+      github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci'))
     permissions:
       contents: read
     runs-on: ${{ fromJSON(vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}

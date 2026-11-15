@@ -4,8 +4,6 @@ on:
   pull_request:
     branches: [main, master]
     types: [labeled, synchronize, reopened]
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -18,9 +16,9 @@ concurrency:
 jobs:
   test:
     if: >-
-      github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'run-full-ci') && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'run-full-ci') && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci')))
     timeout-minutes: 30
-    runs-on: ${{ fromJSON(vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '["ubuntu-latest"]' || vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}
 
     strategy:
       matrix:

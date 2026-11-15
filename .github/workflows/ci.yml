@@ -14,11 +14,10 @@ concurrency:
 
 jobs:
   verify:
-    if: >-
-      github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.repository || contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    # Forks run too, on a GitHub-hosted runner without secrets: a skipped required check would count as passing.
     permissions:
       contents: read
-    runs-on: ${{ fromJSON(vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.full_name != github.repository && '["ubuntu-latest"]' || vars.ACTIONS_RUNNER_LABELS_CI || '["ubuntu-latest"]') }}
     steps:
       - name: Start work budget
         shell: bash

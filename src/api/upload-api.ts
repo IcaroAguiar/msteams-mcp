@@ -280,26 +280,29 @@ export async function deleteDriveItems(auth: Record<string, string>, items: Uplo
   const deadline = Date.now() + budgetMs;
   let pending = items;
   const failed: string[] = [];
-  while (pending.length > 0 && Date.now() < deadline) {
-    const timeoutMs = Math.min(10_000, deadline - Date.now());
-    const responses = await Promise.all(pending.map(item => fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, {
+  while (pending.length > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const timeoutMs = Math.min(10_000, remaining);
+    const results = await Promise.all(pending.map(item => fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, {
       method: 'DELETE',
       headers: auth,
       signal: AbortSignal.timeout(timeoutMs),
-    }).catch(() => null)));
+    }).then(response => ({ response, at: Date.now() }), () => ({ response: null, at: Date.now() }))));
     const retry: UploadedDriveItem[] = [];
-    let waitMs = 1000;
-    responses.forEach((response, index) => {
+    let retryAt = 0;
+    results.forEach(({ response, at }, index) => {
       if (response && (response.ok || response.status === 404)) return;
       if (response && response.status !== 408 && response.status !== 429 && response.status < 500) {
         failed.push(pending[index].name);
         return;
       }
       retry.push(pending[index]);
-      if (response) waitMs = Math.max(waitMs, extractRetryAfter(response.headers) ?? 0);
+      retryAt = Math.max(retryAt, at + ((response && extractRetryAfter(response.headers)) ?? 1000));
     });
     pending = retry;
-    if (pending.length > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(waitMs, deadline - Date.now()))));
+    const waitMs = Math.min(retryAt, deadline) - Date.now();
+    if (pending.length > 0 && waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
   }
   return [...failed, ...pending.map(item => item.name)];
 }

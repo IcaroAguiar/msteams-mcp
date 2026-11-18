@@ -1,9 +1,4 @@
-/**
- * Outgoing attachments, uploaded as the Teams web client does: images to the
- * Async Media Service (inline), other files to the sender's OneDrive, shared
- * with the chat members. Channel files belong in the team's SharePoint library,
- * so channels take images only. Protocol: docs/API-REFERENCE.md, Send Attachments.
- */
+/** Outgoing attachments as the Teams web client sends them: docs/API-REFERENCE.md, Send Attachments. */
 
 import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
@@ -30,7 +25,6 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
 export interface OutgoingAttachments {
   imagesHtml: string;
-  /** JSON string for the message's `files` property. */
   filesProperty?: string;
   sent: Array<{ name: string; kind: 'image' | 'file' }>;
 }
@@ -115,10 +109,7 @@ export function buildFileEntry(item: UploadedDriveItem, siteUrl: string): Record
   };
 }
 
-/**
- * Any agent that reaches this server can name a path, and the file leaves the
- * machine, so the session and well-known credential stores are refused.
- */
+/** Any agent reaching this server can name a path, so dotfiles and the session store never leave. */
 async function isProtectedPath(resolved: string): Promise<boolean> {
   if (resolved.split(sep).some(segment => segment.startsWith('.'))) return true;
   const dirs = await Promise.all([CONFIG_DIR, join(homedir(), 'Library', 'Keychains')]
@@ -131,7 +122,7 @@ async function isProtectedPath(resolved: string): Promise<boolean> {
 }
 
 interface LocalFile {
-  bytes: Buffer;
+  bytes: Buffer<ArrayBuffer>;
   name: string;
   kind: 'image' | 'file';
 }
@@ -164,7 +155,7 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
     } catch (error) {
       return cannotRead(error);
     }
-    let bytes: Buffer;
+    let bytes: Buffer<ArrayBuffer>;
     try {
       const info = await handle.stat();
       if (!info.isFile()) {
@@ -227,7 +218,6 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
   return ok(buildAmsImageHtml(amsUrl, objectId, readImageSize(bytes)));
 }
 
-/** Entra object IDs of the chat members other than the sender. */
 async function chatMemberObjectIds(conversationId: string): Promise<Result<string[]>> {
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) return authResult;

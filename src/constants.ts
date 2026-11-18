@@ -56,7 +56,6 @@ export const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 30000;
 /** Largest message attachment teams_download_attachment saves; senders choose what a message links. */
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
-/** Most local files one teams_send_message call may attach. */
 export const MAX_OUTGOING_ATTACHMENTS = 10;
 
 /** Pause after showing progress overlay step (ms). */

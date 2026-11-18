@@ -273,31 +273,35 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
   return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
-export async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
+export async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[], budgetMs = CLEANUP_DEADLINE_MS): Promise<string[]> {
   // Plain fetch: the shared client refuses every call during a rate-limit window. The session
-  // lock is held, so there is a hard deadline; every item is tried before any transient retry.
-  const deadline = Date.now() + CLEANUP_DEADLINE_MS;
-  let pending = items.map(item => ({ item, waitUntil: 0 }));
+  // lock is held, so there is a hard deadline. Each round deletes every pending file in
+  // parallel; only transient failures go to the next round, after Graph's longest Retry-After.
+  const deadline = Date.now() + budgetMs;
+  let pending = items;
   const failed: string[] = [];
   while (pending.length > 0 && Date.now() < deadline) {
-    const retry: typeof pending = [];
-    for (const entry of pending) {
-      if (entry.waitUntil > Date.now()) { retry.push(entry); continue; }
-      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(entry.item.id)}`, {
-        method: 'DELETE',
-        headers: auth,
-        signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
-      }).catch(() => null);
-      if (response && (response.ok || response.status === 404)) continue;
-      const transient = !response || response.status === 408 || response.status === 429 || response.status >= 500;
-      if (!transient) { failed.push(entry.item.name); continue; }
-      retry.push({ item: entry.item, waitUntil: Date.now() + ((response && extractRetryAfter(response.headers)) ?? 1000) });
-    }
+    const timeoutMs = Math.min(10_000, deadline - Date.now());
+    const responses = await Promise.all(pending.map(item => fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, {
+      method: 'DELETE',
+      headers: auth,
+      signal: AbortSignal.timeout(timeoutMs),
+    }).catch(() => null)));
+    const retry: UploadedDriveItem[] = [];
+    let waitMs = 1000;
+    responses.forEach((response, index) => {
+      if (response && (response.ok || response.status === 404)) return;
+      if (response && response.status !== 408 && response.status !== 429 && response.status < 500) {
+        failed.push(pending[index].name);
+        return;
+      }
+      retry.push(pending[index]);
+      if (response) waitMs = Math.max(waitMs, extractRetryAfter(response.headers) ?? 0);
+    });
     pending = retry;
-    const next = Math.min(...pending.map(entry => entry.waitUntil), deadline);
-    if (pending.length > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, next - Date.now())));
+    if (pending.length > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(waitMs, deadline - Date.now()))));
   }
-  return [...failed, ...pending.map(entry => entry.item.name)];
+  return [...failed, ...pending.map(item => item.name)];
 }
 
 function cleanupNote(left: string[]): string {

@@ -136,9 +136,20 @@ describe('deleteDriveItems', () => {
   it('retries a throttled delete after Retry-After', async () => {
     let calls = 0;
     vi.stubGlobal('fetch', vi.fn(async () => (++calls === 1
-      ? new Response(null, { status: 429, headers: { 'Retry-After': '0' } })
+      ? new Response(null, { status: 429, headers: { 'Retry-After': '1' } })
       : new Response(null, { status: 204 }))));
     expect(await deleteDriveItems({}, [{ id: 'one', name: 'one.pdf', webUrl: '' }])).toEqual([]);
     expect(calls).toBe(2);
+  });
+  it('gives every file a first attempt even when earlier deletes stall', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => url.includes('/items/slow')
+      ? new Promise<Response>((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+      : Promise.resolve(new Response(null, { status: 204 }))));
+    const left = await deleteDriveItems({}, [
+      { id: 'slow1', name: 'a.pdf', webUrl: '' },
+      { id: 'slow2', name: 'b.pdf', webUrl: '' },
+      { id: 'fast', name: 'c.pdf', webUrl: '' },
+    ], 300);
+    expect(left).toEqual(['a.pdf', 'b.pdf']);
   });
 });

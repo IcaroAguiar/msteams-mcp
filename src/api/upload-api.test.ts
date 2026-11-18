@@ -1,10 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ErrorCode } from '../types/errors.js';
-import { buildAmsImageHtml, buildFileEntry, grantsCoverRecipients, prepareAttachments, readCheckedFile, readImageSize } from './upload-api.js';
+import { buildAmsImageHtml, buildFileEntry, deleteDriveItems, grantsCoverRecipients, prepareAttachments, readCheckedFile, readImageSize } from './upload-api.js';
 
 function png(width: number, height: number): Buffer {
   const b = Buffer.alloc(24);
@@ -116,5 +116,29 @@ describe('grantsCoverRecipients', () => {
     expect(grantsCoverRecipients(207, [read('a'), read('b')], ['a', 'b'])).toBe(false);
     expect(grantsCoverRecipients(200, [read('a'), read('a')], ['a', 'b'])).toBe(false);
     expect(grantsCoverRecipients(200, [read('a'), { roles: ['write'], grantedToV2: { user: { id: 'b' } } }], ['a', 'b'])).toBe(false);
+  });
+});
+
+describe('deleteDriveItems', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reports a permanent failure without retrying it and still deletes the rest', async () => {
+    const fetchMock = vi.fn(async (url: string) => new Response(null, { status: url.includes('/items/one') ? 403 : 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const left = await deleteDriveItems({}, [
+      { id: 'one', name: 'one.pdf', webUrl: '' },
+      { id: 'two', name: 'two.pdf', webUrl: '' },
+    ]);
+    expect(left).toEqual(['one.pdf']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a throttled delete after Retry-After', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => (++calls === 1
+      ? new Response(null, { status: 429, headers: { 'Retry-After': '0' } })
+      : new Response(null, { status: 204 }))));
+    expect(await deleteDriveItems({}, [{ id: 'one', name: 'one.pdf', webUrl: '' }])).toEqual([]);
+    expect(calls).toBe(2);
   });
 });

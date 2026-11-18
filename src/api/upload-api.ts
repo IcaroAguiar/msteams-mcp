@@ -7,7 +7,7 @@ import { basename, extname, isAbsolute, join, sep } from 'node:path';
 import { CONFIG_DIR } from '../auth/session-store.js';
 import { httpRequest } from '../utils/http.js';
 import { type Result, ok, err } from '../types/result.js';
-import { ErrorCode, createError } from '../types/errors.js';
+import { ErrorCode, createError, extractRetryAfter } from '../types/errors.js';
 import {
   getAmsBaseUrl,
   requireGraphTokenAsync,
@@ -273,29 +273,31 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
   return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
-/** Plain fetch: the shared client refuses every call during a rate-limit window, and cleanup must still run. */
-async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
-  // The session lock is held meanwhile, so cleanup has a hard deadline and honours Retry-After within it.
+export async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
+  // Plain fetch: the shared client refuses every call during a rate-limit window. The session
+  // lock is held, so there is a hard deadline; every item is tried before any transient retry.
   const deadline = Date.now() + CLEANUP_DEADLINE_MS;
-  const left: string[] = [];
-  for (const item of items) {
-    let deleted = false;
-    while (!deleted && Date.now() < deadline) {
-      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, {
+  let pending = items.map(item => ({ item, waitUntil: 0 }));
+  const failed: string[] = [];
+  while (pending.length > 0 && Date.now() < deadline) {
+    const retry: typeof pending = [];
+    for (const entry of pending) {
+      if (entry.waitUntil > Date.now()) { retry.push(entry); continue; }
+      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(entry.item.id)}`, {
         method: 'DELETE',
         headers: auth,
-        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
       }).catch(() => null);
-      deleted = response !== null && (response.ok || response.status === 404);
-      if (!deleted) {
-        const retryAfterSeconds = Number(response?.headers.get('retry-after'));
-        const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 1000;
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(retryAfterMs, deadline - Date.now()))));
-      }
+      if (response && (response.ok || response.status === 404)) continue;
+      const transient = !response || response.status === 408 || response.status === 429 || response.status >= 500;
+      if (!transient) { failed.push(entry.item.name); continue; }
+      retry.push({ item: entry.item, waitUntil: Date.now() + ((response && extractRetryAfter(response.headers)) ?? 1000) });
     }
-    if (!deleted) left.push(item.name);
+    pending = retry;
+    const next = Math.min(...pending.map(entry => entry.waitUntil), deadline);
+    if (pending.length > 0) await new Promise(resolve => setTimeout(resolve, Math.max(0, next - Date.now())));
   }
-  return left;
+  return [...failed, ...pending.map(entry => entry.item.name)];
 }
 
 function cleanupNote(left: string[]): string {

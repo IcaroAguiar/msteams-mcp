@@ -1,19 +1,15 @@
 /**
- * Outgoing message attachments, uploaded the way the Teams web client does.
- *
- * - Images go to the Async Media Service (AMS): create an object readable by the
- *   conversation, PUT the bytes, then embed `<img itemtype=".../AMSImage">` in
- *   the message HTML. They render inline, like a pasted screenshot.
- * - Other files go to the sender's OneDrive (`Microsoft Teams Chat Files`), are
- *   shared with the chat members, and travel in the message's `files` property,
- *   which Teams renders as a file card.
- *
- * Channel files live in the team's SharePoint library, which this module does
- * not write to, so channels accept images only.
+ * Outgoing attachments, uploaded as the Teams web client does: images to the
+ * Async Media Service (inline), other files to the sender's OneDrive, shared
+ * with the chat members. Channel files belong in the team's SharePoint library,
+ * so channels take images only. Protocol: docs/API-REFERENCE.md, Send Attachments.
  */
 
-import { readFile, stat } from 'node:fs/promises';
-import { basename, extname, isAbsolute } from 'node:path';
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, extname, isAbsolute, join, sep } from 'node:path';
+import { CONFIG_DIR } from '../auth/session-store.js';
 import { httpRequest } from '../utils/http.js';
 import { type Result, ok, err } from '../types/result.js';
 import { ErrorCode, createError } from '../types/errors.js';
@@ -30,16 +26,12 @@ const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
 const UPLOAD_TIMEOUT_MS = 120_000;
 
-/** Extensions sent as inline images; everything else is a file card. */
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
-/** What a message needs to carry its attachments. */
 export interface OutgoingAttachments {
-  /** `<img>` elements to append to the message HTML. */
   imagesHtml: string;
-  /** JSON for the message's `files` property, when files were attached. */
+  /** JSON string for the message's `files` property. */
   filesProperty?: string;
-  /** One entry per attachment, in input order, for the tool response. */
   sent: Array<{ name: string; kind: 'image' | 'file' }>;
 }
 
@@ -47,15 +39,11 @@ export function attachmentKind(path: string): 'image' | 'file' {
   return IMAGE_EXTENSIONS.has(extname(path).toLowerCase()) ? 'image' : 'file';
 }
 
-/** Channels (`@thread.tacv2`/`@thread.skype`) store files in SharePoint, not in a member's OneDrive. */
 export function isChannelConversation(conversationId: string): boolean {
   return /@thread\.(tacv2|skype)$/.test(conversationId);
 }
 
-/**
- * Reads pixel dimensions from PNG, GIF, WebP or JPEG bytes. Returns null when
- * the header is not one of those, so the caller can still send the image.
- */
+/** Pixel size from PNG, GIF, WebP or JPEG headers; null for anything else. */
 export function readImageSize(bytes: Uint8Array): { width: number; height: number } | null {
   const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47) {
@@ -90,14 +78,12 @@ export function readImageSize(bytes: Uint8Array): { width: number; height: numbe
   return null;
 }
 
-/** The inline image markup Teams itself writes for a pasted picture. */
 export function buildAmsImageHtml(amsUrl: string, objectId: string, size: { width: number; height: number } | null): string {
   const src = `${amsUrl}/v1/objects/${objectId}/views/imgo`;
   const dims = size ? ` width="${size.width}" height="${size.height}"` : '';
   return `<p><img itemtype="http://schema.skype.com/AMSImage" src="${src}"${dims} id="${objectId}" itemscope="" href="${src}" target-src="${src}" style="vertical-align:bottom"></p>`;
 }
 
-/** Subset of a Graph driveItem returned by an upload. */
 export interface UploadedDriveItem {
   id: string;
   name: string;
@@ -105,7 +91,6 @@ export interface UploadedDriveItem {
   eTag?: string;
 }
 
-/** One entry of the message `files` property, as the Teams client writes it. */
 export function buildFileEntry(item: UploadedDriveItem, siteUrl: string): Record<string, unknown> {
   const ext = extname(item.name).slice(1).toLowerCase();
   const uniqueId = item.eTag?.match(/\{([0-9A-Fa-f-]{36})\}/)?.[1] ?? item.id;
@@ -130,8 +115,23 @@ export function buildFileEntry(item: UploadedDriveItem, siteUrl: string): Record
   };
 }
 
+/**
+ * Any agent that reaches this server can name a path, and the file leaves the
+ * machine, so the session and well-known credential stores are refused.
+ */
+async function isProtectedPath(resolved: string): Promise<boolean> {
+  if (resolved.split(sep).some(segment => segment.startsWith('.'))) return true;
+  const dirs = await Promise.all([CONFIG_DIR, join(homedir(), 'Library', 'Keychains')]
+    .map(dir => realpath(dir).catch(() => dir)));
+  const target = resolved.toLowerCase();
+  return dirs.some(dir => {
+    const base = dir.toLowerCase();
+    return target === base || target.startsWith(base + sep);
+  });
+}
+
 interface LocalFile {
-  path: string;
+  bytes: Buffer;
   name: string;
   kind: 'image' | 'file';
 }
@@ -145,20 +145,45 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
     if (!isAbsolute(path)) {
       return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
     }
-    const info = await stat(path).catch(() => null);
-    if (!info?.isFile()) {
-      return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a readable file: ${path}`));
+    const cannotRead = (error: unknown) => err(createError(ErrorCode.INVALID_INPUT,
+      `Attachment cannot be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}): ${path}`));
+    let resolved: string;
+    try {
+      resolved = await realpath(path);
+    } catch (error) {
+      return cannotRead(error);
     }
-    if (info.size === 0 || info.size > MAX_ATTACHMENT_BYTES) {
+    if (await isProtectedPath(resolved)) {
       return err(createError(ErrorCode.INVALID_INPUT,
-        `Attachment must be between 1 byte and ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
+        `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
+    }
+    // The checked descriptor is the one read, so a swapped symlink cannot redirect the upload.
+    let handle;
+    try {
+      handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      return cannotRead(error);
+    }
+    let bytes: Buffer;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) {
+        return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a regular file: ${path}`));
+      }
+      if (info.size === 0 || info.size > MAX_ATTACHMENT_BYTES) {
+        return err(createError(ErrorCode.INVALID_INPUT,
+          `Attachment must be between 1 byte and ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
+      }
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
     }
     const kind = attachmentKind(path);
     if (kind === 'file' && isChannelConversation(conversationId)) {
       return err(createError(ErrorCode.INVALID_INPUT,
         `Channels accept image attachments only (png, jpg, gif, webp); ${basename(path)} is a file. Send it in a chat, or share a link to it.`));
     }
-    files.push({ path, name: basename(path), kind });
+    files.push({ bytes, name: basename(path), kind });
   }
   return ok(files);
 }
@@ -190,7 +215,7 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
     return err(createError(ErrorCode.API_ERROR, 'The media service did not return an object id for the image.'));
   }
 
-  const bytes = await readFile(file.path);
+  const bytes = file.bytes;
   const put = await httpRequest<unknown>(`${amsUrl}/v1/objects/${encodeURIComponent(objectId)}/content/imgpsh`, {
     method: 'PUT',
     headers: { ...headers, 'Content-Type': 'application/octet-stream' },
@@ -202,7 +227,7 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
   return ok(buildAmsImageHtml(amsUrl, objectId, readImageSize(bytes)));
 }
 
-/** Members to share a chat file with, as Entra object IDs (the sender excluded). */
+/** Entra object IDs of the chat members other than the sender. */
 async function chatMemberObjectIds(conversationId: string): Promise<Result<string[]>> {
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) return authResult;
@@ -246,7 +271,7 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
       {
         method: 'PUT',
         headers: { ...auth, 'Content-Type': 'application/octet-stream' },
-        body: await readFile(file.path),
+        body: file.bytes,
         timeoutMs: UPLOAD_TIMEOUT_MS,
       }
     );
@@ -274,11 +299,7 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
   return ok(JSON.stringify(entries));
 }
 
-/**
- * Uploads local files for one message. Images are uploaded first, then files;
- * any failure stops before the message is sent, so a message never goes out
- * with a missing attachment.
- */
+/** Uploads everything before the message is sent, so a failure sends nothing. */
 export async function prepareAttachments(conversationId: string, paths: string[]): Promise<Result<OutgoingAttachments>> {
   const checked = await checkFiles(conversationId, paths);
   if (!checked.ok) return checked;

@@ -87,8 +87,10 @@ describe('prepareAttachments validation (before any upload)', () => {
     }
   });
 
-  it('refuses relative and missing paths', async () => {
-    for (const path of ['doc.pdf', join(dir, 'missing.png')]) {
+  it('refuses relative, missing and credential paths', async () => {
+    const env = join(dir, '.env');
+    writeFileSync(env, 'TOKEN=x');
+    for (const path of ['doc.pdf', join(dir, 'missing.png'), env]) {
       const result = await prepareAttachments('48:notes', [path]);
       expect(result.ok).toBe(false);
     }

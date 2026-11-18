@@ -173,7 +173,7 @@ const sendMessageToolDefinition: Tool = {
         type: 'array',
         items: { type: 'string' },
         maxItems: MAX_OUTGOING_ATTACHMENTS,
-        description: `Absolute paths of local files to attach (up to ${MAX_OUTGOING_ATTACHMENTS}, 100 MB each, 250 MB in total; dotfiles, hidden folders and credential stores are refused). Images (png, jpg, jpeg, gif, webp) appear inline below the text, like a pasted screenshot, in chats and channels. Other files (pdf, docx, zip...) are uploaded to your OneDrive "Microsoft Teams Chat Files" folder, shared read-only with the chat members, and shown as a file card; chats only, not channels. Every file is uploaded and shared before the message is sent; a failed upload or share sends nothing and deletes the uploaded files.`,
+        description: `Absolute paths of local files to attach (up to ${MAX_OUTGOING_ATTACHMENTS}, 100 MB each; dotfiles, hidden folders and credential stores are refused). Images (png, jpg, jpeg, gif, webp) appear inline below the text, like a pasted screenshot, in chats and channels. Other files (pdf, docx, zip...) are uploaded to your OneDrive "Microsoft Teams Chat Files" folder, shared read-only with the chat members, and shown as a file card; chats only, not channels. Every file is uploaded and shared before the message is sent; a failed upload or share sends nothing and deletes the uploaded files.`,
       },
     },
     required: ['content'],
@@ -583,9 +583,10 @@ async function handleSendMessage(
   });
 
   if (!result.ok) {
-    // A timeout may still have delivered the message, so its files stay shared.
-    if (attachments && result.error.code !== ErrorCode.TIMEOUT && result.error.code !== ErrorCode.NETWORK_ERROR) {
-      await attachments.discard();
+    // Only a definite rejection (4xx other than 408/429) proves the message was not stored; a timeout or 5xx may have delivered it.
+    if (attachments?.filesProperty && /^HTTP 4(?!08|29)\d\d\b/.test(result.error.message)) {
+      const note = await attachments.discard();
+      return { success: false, error: { ...result.error, message: `${result.error.message} ${note}` } };
     }
     return { success: false, error: result.error };
   }

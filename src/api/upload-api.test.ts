@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ErrorCode } from '../types/errors.js';
-import { buildAmsImageHtml, buildFileEntry, prepareAttachments, readImageSize } from './upload-api.js';
+import { buildAmsImageHtml, buildFileEntry, grantsCoverRecipients, prepareAttachments, readCheckedFile, readImageSize } from './upload-api.js';
 
 function png(width: number, height: number): Buffer {
   const b = Buffer.alloc(24);
@@ -93,11 +93,27 @@ describe('prepareAttachments validation (before any upload)', () => {
     writeFileSync(env, 'TOKEN=x');
     const disguised = join(dir, 'notes.txt');
     symlinkSync(env, disguised);
+    expect((await prepareAttachments('48:notes', ['doc.pdf'])).ok).toBe(false);
+    for (const path of [join(dir, 'missing.png'), env, disguised]) {
+      expect((await readCheckedFile(path)).ok).toBe(false);
+    }
+    expect((await readCheckedFile(pdf)).ok).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a named pipe without blocking on it', async () => {
     const fifo = join(dir, 'pipe.png');
     execFileSync('mkfifo', [fifo]);
-    for (const path of ['doc.pdf', join(dir, 'missing.png'), env, disguised, fifo]) {
-      const result = await prepareAttachments('48:notes', [path]);
-      expect(result.ok).toBe(false);
-    }
+    const result = await readCheckedFile(fifo);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain('not a regular file');
+  });
+});
+
+describe('grantsCoverRecipients', () => {
+  it('needs HTTP 200 and a read permission for every recipient', () => {
+    expect(grantsCoverRecipients(200, [{ roles: ['read'] }, { roles: ['read'] }], 2)).toBe(true);
+    expect(grantsCoverRecipients(207, [{ roles: ['read'] }, { roles: ['read'] }], 2)).toBe(false);
+    expect(grantsCoverRecipients(200, [{ roles: ['read'] }], 2)).toBe(false);
+    expect(grantsCoverRecipients(200, [{ roles: ['read'] }, { roles: [] }], 2)).toBe(false);
   });
 });

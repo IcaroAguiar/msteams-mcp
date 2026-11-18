@@ -57,7 +57,6 @@ export const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 30000;
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 export const MAX_OUTGOING_ATTACHMENTS = 10;
-export const MAX_OUTGOING_TOTAL_BYTES = 250 * 1024 * 1024;
 
 /** Pause after showing progress overlay step (ms). */
 export const OVERLAY_STEP_PAUSE_MS = 1500;

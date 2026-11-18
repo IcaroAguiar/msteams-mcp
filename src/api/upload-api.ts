@@ -15,7 +15,7 @@ import {
 } from '../utils/auth-guards.js';
 import { getSkypeAuthHeaders } from '../utils/api-config.js';
 import { extractOneOnOneMemberIds } from './chatsvc-messaging.js';
-import { MAX_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENTS, MAX_OUTGOING_TOTAL_BYTES, MRI_ORGID_PREFIX, SELF_CHAT_ID } from '../constants.js';
+import { MAX_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENTS, MRI_ORGID_PREFIX, SELF_CHAT_ID } from '../constants.js';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
@@ -27,8 +27,8 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 export interface OutgoingAttachments {
   imagesHtml: string;
   filesProperty?: string;
-  /** Deletes uploaded files, revoking their access; call when the message was definitely not sent. */
-  discard: () => Promise<void>;
+  /** Deletes uploaded files, revoking their access, and says what is left; only after a definite rejection. */
+  discard: () => Promise<string>;
   sent: Array<{ name: string; kind: 'image' | 'file' }>;
 }
 
@@ -128,28 +128,24 @@ async function isProtectedPath(resolved: string): Promise<boolean> {
 }
 
 interface LocalFile {
-  bytes: Buffer<ArrayBuffer>;
+  path: string;
   name: string;
   kind: 'image' | 'file';
 }
 
 const cannotRead = (path: string, error: unknown) => err(createError(ErrorCode.INVALID_INPUT,
   `Attachment cannot be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}): ${path}`));
+const refusedLocation = (path: string) => err(createError(ErrorCode.INVALID_INPUT,
+  `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
 
-async function readCheckedFile(path: string): Promise<Result<Buffer<ArrayBuffer>>> {
-  if (!isAbsolute(path)) {
-    return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
-  }
+export async function readCheckedFile(path: string): Promise<Result<Buffer<ArrayBuffer>>> {
   let resolved: string;
   try {
     resolved = await realpath(path);
   } catch (error) {
     return cannotRead(path, error);
   }
-  if (await isProtectedPath(path) || await isProtectedPath(resolved)) {
-    return err(createError(ErrorCode.INVALID_INPUT,
-      `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
-  }
+  if (await isProtectedPath(path) || await isProtectedPath(resolved)) return refusedLocation(path);
   // Nonblocking, so a FIFO cannot stall the shared server; no final symlink is followed.
   let handle;
   try {
@@ -162,9 +158,12 @@ async function readCheckedFile(path: string): Promise<Result<Buffer<ArrayBuffer>
     if (!info.isFile()) {
       return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a regular file: ${path}`));
     }
-    // An ancestor swapped after the check would make the opened file differ from the checked path.
-    const current = await stat(resolved).catch(() => null);
-    if (!current || current.dev !== info.dev || current.ino !== info.ino || await realpath(path).catch(() => '') !== resolved) {
+    // Resolved again after opening: an ancestor swapped in between either shows a
+    // protected location here or names a different file than the descriptor holds.
+    const after = await realpath(path).catch(() => null);
+    if (!after || await isProtectedPath(after)) return refusedLocation(path);
+    const named = await stat(after).catch(() => null);
+    if (!named || named.dev !== info.dev || named.ino !== info.ino) {
       return err(createError(ErrorCode.INVALID_INPUT, `Attachment changed while it was being checked: ${path}`));
     }
     if (info.size === 0 || info.size > MAX_ATTACHMENT_BYTES) {
@@ -182,26 +181,21 @@ async function readCheckedFile(path: string): Promise<Result<Buffer<ArrayBuffer>
   }
 }
 
-async function checkFiles(conversationId: string, paths: string[]): Promise<Result<LocalFile[]>> {
+function checkFiles(conversationId: string, paths: string[]): Result<LocalFile[]> {
   if (paths.length > MAX_OUTGOING_ATTACHMENTS) {
     return err(createError(ErrorCode.INVALID_INPUT, `At most ${MAX_OUTGOING_ATTACHMENTS} attachments per message.`));
   }
   const files: LocalFile[] = [];
-  let totalBytes = 0;
   for (const path of paths) {
+    if (!isAbsolute(path)) {
+      return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
+    }
     const kind = attachmentKind(path);
     if (kind === 'file' && isChannelConversation(conversationId)) {
       return err(createError(ErrorCode.INVALID_INPUT,
         `Channels accept image attachments only (png, jpg, gif, webp); ${basename(path)} is a file. Send it in a chat, or share a link to it.`));
     }
-    const bytes = await readCheckedFile(path);
-    if (!bytes.ok) return bytes;
-    totalBytes += bytes.value.length;
-    if (totalBytes > MAX_OUTGOING_TOTAL_BYTES) {
-      return err(createError(ErrorCode.INVALID_INPUT,
-        `Attachments of one message must total at most ${MAX_OUTGOING_TOTAL_BYTES / (1024 * 1024)} MB.`));
-    }
-    files.push({ bytes: bytes.value, name: basename(path), kind });
+    files.push({ path, name: basename(path), kind });
   }
   return ok(files);
 }
@@ -215,6 +209,8 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
   }
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) return authResult;
+  const bytes = await readCheckedFile(file.path);
+  if (!bytes.ok) return bytes;
   const ams = amsOrigin.origin;
   // AMS rejects requests without a client version it can map to a platform.
   const headers = {
@@ -234,17 +230,16 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
     return err(createError(ErrorCode.API_ERROR, 'The media service did not return an object id for the image.'));
   }
 
-  const bytes = file.bytes;
   const put = await httpRequest<unknown>(`${ams}/v1/objects/${encodeURIComponent(objectId)}/content/imgpsh`, {
     method: 'PUT',
     redirect: 'error',
     headers: { ...headers, 'Content-Type': 'application/octet-stream' },
-    body: bytes,
+    body: bytes.value,
     timeoutMs: UPLOAD_TIMEOUT_MS,
   });
   if (!put.ok) return put;
 
-  return ok(buildAmsImageHtml(ams, objectId, readImageSize(bytes)));
+  return ok(buildAmsImageHtml(ams, objectId, readImageSize(bytes.value)));
 }
 
 async function chatMemberObjectIds(conversationId: string): Promise<Result<string[]>> {
@@ -277,10 +272,30 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
   return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
-async function deleteDriveItems(auth: Record<string, string>, itemIds: string[]): Promise<void> {
-  for (const id of itemIds) {
-    await httpRequest<unknown>(`${GRAPH}/me/drive/items/${encodeURIComponent(id)}`, { method: 'DELETE', headers: auth });
+/**
+ * Deletes uploads, which revokes their grants. Plain fetch on purpose: the
+ * shared client refuses every call during a rate-limit window, and cleanup must
+ * still be attempted. Returns the names it could not delete.
+ */
+async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
+  const left: string[] = [];
+  for (const item of items) {
+    let deleted = false;
+    for (let attempt = 0; attempt < 3 && !deleted; attempt++) {
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, { method: 'DELETE', headers: auth })
+        .catch(() => null);
+      deleted = response !== null && (response.ok || response.status === 404);
+    }
+    if (!deleted) left.push(item.name);
   }
+  return left;
+}
+
+function cleanupNote(left: string[]): string {
+  return left.length === 0
+    ? 'The uploaded files were deleted, so nobody kept access.'
+    : `Could not delete ${left.join(', ')} from your OneDrive "${CHAT_FILES_FOLDER}" folder; delete them there to revoke access.`;
 }
 
 async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Result<void>> {
@@ -296,16 +311,19 @@ async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Resu
   return created.ok || created.error.message.includes('409') ? ok(undefined) : created;
 }
 
-interface UploadedFiles {
-  filesProperty: string;
-  discard: () => Promise<void>;
+/** A grant is complete when every recipient holds a read permission. */
+export function grantsCoverRecipients(status: number, permissions: Array<{ roles?: string[] }> | undefined, recipients: number): boolean {
+  return status === 200
+    && (permissions?.length ?? 0) === recipients
+    && (permissions ?? []).every(permission => permission.roles?.includes('read'));
 }
 
-/**
- * Uploads every file first and only then grants access, so a failed upload
- * shares nothing; a failed or partial grant deletes the uploads, which revokes
- * whatever was granted.
- */
+interface UploadedFiles {
+  filesProperty: string;
+  discard: () => Promise<string>;
+}
+
+/** Files are read and uploaded one at a time, and shared only after all uploads succeed. */
 async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<Result<UploadedFiles>> {
   const tokenResult = await requireGraphTokenAsync();
   if (!tokenResult.ok) return tokenResult;
@@ -321,28 +339,33 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
   if (!folder.ok) return folder;
 
   const items: UploadedDriveItem[] = [];
-  const discard = () => deleteDriveItems(auth, items.map(item => item.id));
+  const discard = async () => cleanupNote(await deleteDriveItems(auth, items));
+  const fail = async (error: { message: string }) => err(createError(ErrorCode.API_ERROR,
+    `${error.message} Nothing was sent. ${await discard()}`));
+
   for (const file of files) {
+    const bytes = await readCheckedFile(file.path);
+    if (!bytes.ok) {
+      if (items.length > 0) await discard();
+      return bytes;
+    }
     const path = `${CHAT_FILES_FOLDER}/${file.name}`.split('/').map(encodeURIComponent).join('/');
     const uploaded = await httpRequest<UploadedDriveItem>(
       `${GRAPH}/me/drive/root:/${path}:/content?@microsoft.graph.conflictBehavior=rename`,
       {
         method: 'PUT',
         headers: { ...auth, 'Content-Type': 'application/octet-stream' },
-        body: file.bytes,
+        body: bytes.value,
         timeoutMs: UPLOAD_TIMEOUT_MS,
       }
     );
-    if (!uploaded.ok) {
-      await discard();
-      return uploaded;
-    }
+    if (!uploaded.ok) return fail(uploaded.error);
     items.push(uploaded.value.data);
   }
 
   if (members.value.length > 0) {
     for (const item of items) {
-      const invited = await httpRequest<{ value?: unknown[] }>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
+      const invited = await httpRequest<{ value?: Array<{ roles?: string[] }> }>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -352,12 +375,9 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
           sendInvitation: false,
         }),
       });
-      const complete = invited.ok && invited.value.status === 200 && (invited.value.data.value?.length ?? 0) >= members.value.length;
-      if (!complete) {
-        await discard();
-        const reason = invited.ok ? `only part of the chat could be given access (HTTP ${invited.value.status})` : invited.error.message;
-        return err(createError(ErrorCode.API_ERROR,
-          `Could not share ${item.name} with the chat members: ${reason}. The uploads were deleted and nothing was sent.`));
+      if (!invited.ok) return fail({ message: `Could not share ${item.name} with the chat members: ${invited.error.message}.` });
+      if (!grantsCoverRecipients(invited.value.status, invited.value.data.value, members.value.length)) {
+        return fail({ message: `Only part of the chat could be given read access to ${item.name} (HTTP ${invited.value.status}).` });
       }
     }
   }
@@ -366,7 +386,7 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
 
 /** Uploads everything before the message is sent, so a failure sends nothing. */
 export async function prepareAttachments(conversationId: string, paths: string[]): Promise<Result<OutgoingAttachments>> {
-  const checked = await checkFiles(conversationId, paths);
+  const checked = checkFiles(conversationId, paths);
   if (!checked.ok) return checked;
 
   let imagesHtml = '';
@@ -378,7 +398,7 @@ export async function prepareAttachments(conversationId: string, paths: string[]
 
   const files = checked.value.filter(f => f.kind === 'file');
   let filesProperty: string | undefined;
-  let discard = async () => {};
+  let discard = async () => '';
   if (files.length > 0) {
     const uploaded = await uploadFiles(conversationId, files);
     if (!uploaded.ok) return uploaded;

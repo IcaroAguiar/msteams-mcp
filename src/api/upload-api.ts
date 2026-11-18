@@ -288,17 +288,20 @@ export async function deleteDriveItems(auth: Record<string, string>, items: Uplo
       method: 'DELETE',
       headers: auth,
       signal: AbortSignal.timeout(timeoutMs),
-    }).then(response => ({ response, at: Date.now() }), () => ({ response: null, at: Date.now() }))));
+    }).then(
+      response => ({ response, retryAt: Date.now() + (extractRetryAfter(response.headers) ?? 1000) }),
+      () => ({ response: null, retryAt: Date.now() + 1000 }),
+    )));
     const retry: UploadedDriveItem[] = [];
     let retryAt = 0;
-    results.forEach(({ response, at }, index) => {
+    results.forEach(({ response, retryAt: itemRetryAt }, index) => {
       if (response && (response.ok || response.status === 404)) return;
       if (response && response.status !== 408 && response.status !== 429 && response.status < 500) {
         failed.push(pending[index].name);
         return;
       }
       retry.push(pending[index]);
-      retryAt = Math.max(retryAt, at + ((response && extractRetryAfter(response.headers)) ?? 1000));
+      retryAt = Math.max(retryAt, itemRetryAt);
     });
     pending = retry;
     const waitMs = Math.min(retryAt, deadline) - Date.now();

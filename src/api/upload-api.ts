@@ -1,7 +1,7 @@
 /** Outgoing attachments as the Teams web client sends them: docs/API-REFERENCE.md, Send Attachments. */
 
 import { constants } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
+import { open, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, join, sep } from 'node:path';
 import { CONFIG_DIR } from '../auth/session-store.js';
@@ -15,7 +15,7 @@ import {
 } from '../utils/auth-guards.js';
 import { getSkypeAuthHeaders } from '../utils/api-config.js';
 import { extractOneOnOneMemberIds } from './chatsvc-messaging.js';
-import { MAX_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENTS, MRI_ORGID_PREFIX, SELF_CHAT_ID } from '../constants.js';
+import { MAX_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENTS, MAX_OUTGOING_TOTAL_BYTES, MRI_ORGID_PREFIX, SELF_CHAT_ID } from '../constants.js';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
@@ -27,6 +27,8 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 export interface OutgoingAttachments {
   imagesHtml: string;
   filesProperty?: string;
+  /** Deletes uploaded files, revoking their access; call when the message was definitely not sent. */
+  discard: () => Promise<void>;
   sent: Array<{ name: string; kind: 'image' | 'file' }>;
 }
 
@@ -131,6 +133,55 @@ interface LocalFile {
   kind: 'image' | 'file';
 }
 
+const cannotRead = (path: string, error: unknown) => err(createError(ErrorCode.INVALID_INPUT,
+  `Attachment cannot be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}): ${path}`));
+
+async function readCheckedFile(path: string): Promise<Result<Buffer<ArrayBuffer>>> {
+  if (!isAbsolute(path)) {
+    return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
+  }
+  let resolved: string;
+  try {
+    resolved = await realpath(path);
+  } catch (error) {
+    return cannotRead(path, error);
+  }
+  if (await isProtectedPath(path) || await isProtectedPath(resolved)) {
+    return err(createError(ErrorCode.INVALID_INPUT,
+      `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
+  }
+  // Nonblocking, so a FIFO cannot stall the shared server; no final symlink is followed.
+  let handle;
+  try {
+    handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    return cannotRead(path, error);
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a regular file: ${path}`));
+    }
+    // An ancestor swapped after the check would make the opened file differ from the checked path.
+    const current = await stat(resolved).catch(() => null);
+    if (!current || current.dev !== info.dev || current.ino !== info.ino || await realpath(path).catch(() => '') !== resolved) {
+      return err(createError(ErrorCode.INVALID_INPUT, `Attachment changed while it was being checked: ${path}`));
+    }
+    if (info.size === 0 || info.size > MAX_ATTACHMENT_BYTES) {
+      return err(createError(ErrorCode.INVALID_INPUT,
+        `Attachment must be between 1 byte and ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
+    }
+    const bytes = Buffer.alloc(info.size);
+    const { bytesRead } = await handle.read(bytes, 0, info.size, 0);
+    if (bytesRead !== info.size) {
+      return err(createError(ErrorCode.INVALID_INPUT, `Attachment changed while it was being read: ${path}`));
+    }
+    return ok(bytes);
+  } finally {
+    await handle.close();
+  }
+}
+
 async function checkFiles(conversationId: string, paths: string[]): Promise<Result<LocalFile[]>> {
   if (paths.length > MAX_OUTGOING_ATTACHMENTS) {
     return err(createError(ErrorCode.INVALID_INPUT, `At most ${MAX_OUTGOING_ATTACHMENTS} attachments per message.`));
@@ -138,71 +189,42 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
   const files: LocalFile[] = [];
   let totalBytes = 0;
   for (const path of paths) {
-    if (!isAbsolute(path)) {
-      return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
-    }
-    const cannotRead = (error: unknown) => err(createError(ErrorCode.INVALID_INPUT,
-      `Attachment cannot be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}): ${path}`));
-    let resolved: string;
-    try {
-      resolved = await realpath(path);
-    } catch (error) {
-      return cannotRead(error);
-    }
-    if (await isProtectedPath(resolved)) {
-      return err(createError(ErrorCode.INVALID_INPUT,
-        `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
-    }
-    // Opened without following a final symlink, so the size checked is the content read.
-    let handle;
-    try {
-      handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
-    } catch (error) {
-      return cannotRead(error);
-    }
-    let bytes: Buffer<ArrayBuffer>;
-    try {
-      const info = await handle.stat();
-      if (!info.isFile()) {
-        return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a regular file: ${path}`));
-      }
-      totalBytes += info.size;
-      if (info.size === 0 || totalBytes > MAX_ATTACHMENT_BYTES) {
-        return err(createError(ErrorCode.INVALID_INPUT,
-          `Attachments must not be empty and must total at most ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
-      }
-      bytes = await handle.readFile();
-    } finally {
-      await handle.close();
-    }
     const kind = attachmentKind(path);
     if (kind === 'file' && isChannelConversation(conversationId)) {
       return err(createError(ErrorCode.INVALID_INPUT,
         `Channels accept image attachments only (png, jpg, gif, webp); ${basename(path)} is a file. Send it in a chat, or share a link to it.`));
     }
-    files.push({ bytes, name: basename(path), kind });
+    const bytes = await readCheckedFile(path);
+    if (!bytes.ok) return bytes;
+    totalBytes += bytes.value.length;
+    if (totalBytes > MAX_OUTGOING_TOTAL_BYTES) {
+      return err(createError(ErrorCode.INVALID_INPUT,
+        `Attachments of one message must total at most ${MAX_OUTGOING_TOTAL_BYTES / (1024 * 1024)} MB.`));
+    }
+    files.push({ bytes: bytes.value, name: basename(path), kind });
   }
   return ok(files);
 }
 
 async function uploadImage(conversationId: string, file: LocalFile): Promise<Result<string>> {
   const amsUrl = getAmsBaseUrl();
-  if (!amsUrl || !AMS_HOST.test(new URL(amsUrl).hostname)) {
+  const amsOrigin = amsUrl && URL.canParse(amsUrl) ? new URL(amsUrl) : null;
+  if (!amsOrigin || amsOrigin.protocol !== 'https:' || !AMS_HOST.test(amsOrigin.hostname)) {
     return err(createError(ErrorCode.API_ERROR,
       'The Teams session does not list a media service, so images cannot be uploaded. Run teams_login with refresh: true.'));
   }
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) return authResult;
-  const { auth, baseUrl } = authResult.value;
+  const ams = amsOrigin.origin;
   // AMS rejects requests without a client version it can map to a platform.
   const headers = {
-    ...getSkypeAuthHeaders(auth.skypeToken, auth.authToken, baseUrl),
-    Authorization: `skype_token ${auth.skypeToken}`,
+    Authorization: `skype_token ${authResult.value.auth.skypeToken}`,
     'X-Ms-Client-Version': '1415/1.0.0.2025010401',
   };
 
-  const created = await httpRequest<{ id?: string }>(`${amsUrl}/v1/objects`, {
+  const created = await httpRequest<{ id?: string }>(`${ams}/v1/objects`, {
     method: 'POST',
+    redirect: 'error',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ type: 'pish/image', permissions: { [conversationId]: ['read'] }, filename: file.name }),
   });
@@ -213,15 +235,16 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
   }
 
   const bytes = file.bytes;
-  const put = await httpRequest<unknown>(`${amsUrl}/v1/objects/${encodeURIComponent(objectId)}/content/imgpsh`, {
+  const put = await httpRequest<unknown>(`${ams}/v1/objects/${encodeURIComponent(objectId)}/content/imgpsh`, {
     method: 'PUT',
+    redirect: 'error',
     headers: { ...headers, 'Content-Type': 'application/octet-stream' },
     body: bytes,
     timeoutMs: UPLOAD_TIMEOUT_MS,
   });
   if (!put.ok) return put;
 
-  return ok(buildAmsImageHtml(amsUrl, objectId, readImageSize(bytes)));
+  return ok(buildAmsImageHtml(ams, objectId, readImageSize(bytes)));
 }
 
 async function chatMemberObjectIds(conversationId: string): Promise<Result<string[]>> {
@@ -232,7 +255,12 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
 
   if (conversationId === SELF_CHAT_ID) return ok([]);
   const oneOnOne = extractOneOnOneMemberIds(conversationId);
-  if (oneOnOne) return ok(oneOnOne.filter(id => id !== self));
+  if (oneOnOne) {
+    if (!oneOnOne.includes(self)) {
+      return err(createError(ErrorCode.INVALID_INPUT, 'This 1:1 conversation id does not include you, so no file is shared through it.'));
+    }
+    return ok(oneOnOne.filter(id => id !== self));
+  }
 
   const response = await httpRequest<{ members?: Array<{ id?: string }> }>(
     `${baseUrl}/api/chatsvc/${region}/v1/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`,
@@ -249,7 +277,36 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
   return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
-async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<Result<string>> {
+async function deleteDriveItems(auth: Record<string, string>, itemIds: string[]): Promise<void> {
+  for (const id of itemIds) {
+    await httpRequest<unknown>(`${GRAPH}/me/drive/items/${encodeURIComponent(id)}`, { method: 'DELETE', headers: auth });
+  }
+}
+
+async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Result<void>> {
+  const folder = await httpRequest<unknown>(`${GRAPH}/me/drive/root:/${encodeURIComponent(CHAT_FILES_FOLDER)}`, { method: 'GET', headers: auth });
+  if (folder.ok) return ok(undefined);
+  if (folder.error.code !== ErrorCode.NOT_FOUND) return folder;
+  const created = await httpRequest<unknown>(`${GRAPH}/me/drive/root/children`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: CHAT_FILES_FOLDER, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
+  });
+  // 409: created meanwhile by another upload.
+  return created.ok || created.error.message.includes('409') ? ok(undefined) : created;
+}
+
+interface UploadedFiles {
+  filesProperty: string;
+  discard: () => Promise<void>;
+}
+
+/**
+ * Uploads every file first and only then grants access, so a failed upload
+ * shares nothing; a failed or partial grant deletes the uploads, which revokes
+ * whatever was granted.
+ */
+async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<Result<UploadedFiles>> {
   const tokenResult = await requireGraphTokenAsync();
   if (!tokenResult.ok) return tokenResult;
   const auth = { Authorization: `Bearer ${tokenResult.value}` };
@@ -260,8 +317,11 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
   const drive = await httpRequest<{ webUrl?: string }>(`${GRAPH}/me/drive?$select=webUrl`, { method: 'GET', headers: auth });
   if (!drive.ok) return drive;
   const siteUrl = (drive.value.data.webUrl ?? '').replace(/\/Documents\/?$/, '/');
+  const folder = await ensureChatFilesFolder(auth);
+  if (!folder.ok) return folder;
 
-  const entries: Record<string, unknown>[] = [];
+  const items: UploadedDriveItem[] = [];
+  const discard = () => deleteDriveItems(auth, items.map(item => item.id));
   for (const file of files) {
     const path = `${CHAT_FILES_FOLDER}/${file.name}`.split('/').map(encodeURIComponent).join('/');
     const uploaded = await httpRequest<UploadedDriveItem>(
@@ -273,11 +333,16 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
         timeoutMs: UPLOAD_TIMEOUT_MS,
       }
     );
-    if (!uploaded.ok) return uploaded;
-    const item = uploaded.value.data;
+    if (!uploaded.ok) {
+      await discard();
+      return uploaded;
+    }
+    items.push(uploaded.value.data);
+  }
 
-    if (members.value.length > 0) {
-      const invited = await httpRequest<unknown>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
+  if (members.value.length > 0) {
+    for (const item of items) {
+      const invited = await httpRequest<{ value?: unknown[] }>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -287,14 +352,16 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
           sendInvitation: false,
         }),
       });
-      if (!invited.ok) {
+      const complete = invited.ok && invited.value.status === 200 && (invited.value.data.value?.length ?? 0) >= members.value.length;
+      if (!complete) {
+        await discard();
+        const reason = invited.ok ? `only part of the chat could be given access (HTTP ${invited.value.status})` : invited.error.message;
         return err(createError(ErrorCode.API_ERROR,
-          `Uploaded ${item.name} to your OneDrive but could not share it with the chat members: ${invited.error.message}. Nothing was sent.`));
+          `Could not share ${item.name} with the chat members: ${reason}. The uploads were deleted and nothing was sent.`));
       }
     }
-    entries.push(buildFileEntry(item, siteUrl));
   }
-  return ok(JSON.stringify(entries));
+  return ok({ filesProperty: JSON.stringify(items.map(item => buildFileEntry(item, siteUrl))), discard });
 }
 
 /** Uploads everything before the message is sent, so a failure sends nothing. */
@@ -311,11 +378,12 @@ export async function prepareAttachments(conversationId: string, paths: string[]
 
   const files = checked.value.filter(f => f.kind === 'file');
   let filesProperty: string | undefined;
+  let discard = async () => {};
   if (files.length > 0) {
     const uploaded = await uploadFiles(conversationId, files);
     if (!uploaded.ok) return uploaded;
-    filesProperty = uploaded.value;
+    ({ filesProperty, discard } = uploaded.value);
   }
 
-  return ok({ imagesHtml, filesProperty, sent: checked.value.map(f => ({ name: f.name, kind: f.kind })) });
+  return ok({ imagesHtml, filesProperty, discard, sent: checked.value.map(f => ({ name: f.name, kind: f.kind })) });
 }

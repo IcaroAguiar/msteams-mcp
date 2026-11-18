@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ErrorCode } from '../types/errors.js';
 import { buildAmsImageHtml, buildFileEntry, prepareAttachments, readImageSize } from './upload-api.js';
@@ -92,7 +93,9 @@ describe('prepareAttachments validation (before any upload)', () => {
     writeFileSync(env, 'TOKEN=x');
     const disguised = join(dir, 'notes.txt');
     symlinkSync(env, disguised);
-    for (const path of ['doc.pdf', join(dir, 'missing.png'), env, disguised]) {
+    const fifo = join(dir, 'pipe.png');
+    execFileSync('mkfifo', [fifo]);
+    for (const path of ['doc.pdf', join(dir, 'missing.png'), env, disguised, fifo]) {
       const result = await prepareAttachments('48:notes', [path]);
       expect(result.ok).toBe(false);
     }

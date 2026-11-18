@@ -259,6 +259,10 @@ export function getTeamsBaseUrl(): string {
   return getRegionConfig()?.teamsBaseUrl ?? DEFAULT_TEAMS_BASE_URL;
 }
 
+export function getAmsBaseUrl(): string | null {
+  return getRegionConfig()?.amsUrl ?? null;
+}
+
 /**
  * Gets the CSA (chatsvcagg) region from session config.
  *

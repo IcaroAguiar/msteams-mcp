@@ -869,6 +869,29 @@ Fetches a single message by ID with full content. No age/retention limit observe
 
 ---
 
+### Send Attachments
+
+`teams_send_message` uploads `attachments` before posting; a failed upload sends nothing (`src/api/upload-api.ts`).
+
+**Images (inline, chats and channels)** go to the Async Media Service at the `ams` URL of `DISCOVER-REGION-GTM` (e.g. `https://us-api.asm.skype.com`):
+
+```
+POST {ams}/v1/objects
+Authorization: skype_token {skypeToken}
+X-Ms-Client-Version: 1415/1.0.0.2025010401      # required: without it, 400 "platform id could not be created"
+{"type":"pish/image","permissions":{"<conversationId>":["read"]},"filename":"shot.png"}
+-> 201 {"id":"0-eus-d15-..."}
+
+PUT {ams}/v1/objects/{id}/content/imgpsh        # raw bytes, application/octet-stream -> 201
+```
+
+The message (`RichText/Html`) then carries the same markup Teams writes for a pasted picture:
+`<img itemtype="http://schema.skype.com/AMSImage" src="{ams}/v1/objects/{id}/views/imgo" width=".." height=".." id="{id}" itemscope="" href="..." target-src="...">`. `sharingMode` is not accepted in the create body.
+
+**Other files (chats only)** use the Graph token: `PUT /me/drive/root:/Microsoft Teams Chat Files/{name}:/content?@microsoft.graph.conflictBehavior=rename`, then `POST /me/drive/items/{id}/invite` with `recipients: [{objectId}]`, `roles: ["read"]`, `sendInvitation: false` for every chat member except the sender, after every file is uploaded. The folder is created first when missing. A grant is complete only on HTTP 200 with a `read` permission whose `grantedToV2.user.id` (or `grantedToIdentitiesV2`) names each recipient (207 is partial); otherwise, and when the message post is definitively rejected (4xx other than 408/429), the uploaded files are deleted, which revokes the grants. Deletion is best effort within 20 s (honouring `Retry-After`), since the session lock is held; files it could not delete are named in the error so the user can remove them. Files are read and uploaded one at a time, so memory stays bounded by the largest file. A 1:1 conversation id must include the sender, and a chat with members outside the organisation (other than `28:` bots) refuses files. Members come from the conversation id for 1:1 chats and from `GET /v1/threads/{id}?view=msnp24Equivalent` (`members[].id`) otherwise; `GET /v1/users/ME/conversations/{id}` returns no members. The message gets `properties.files`, a JSON string of `http://schema.skype.com/File` entries (`id` is the GUID in the driveItem `eTag`, `itemid` the driveItem id, `fileInfo.fileUrl` its `webUrl`, `baseUrl` the personal site). Channel files belong in the team's SharePoint library and are not supported.
+
+---
+
 ### Reply to Thread (Channel)
 
 **Endpoint:** `POST https://teams.microsoft.com/api/chatsvc/{region}/v1/users/ME/conversations/{channelId};messageid={threadRootId}/messages`

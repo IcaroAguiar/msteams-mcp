@@ -110,10 +110,11 @@ describe('prepareAttachments validation (before any upload)', () => {
 });
 
 describe('grantsCoverRecipients', () => {
-  it('needs HTTP 200 and a read permission for every recipient', () => {
-    expect(grantsCoverRecipients(200, [{ roles: ['read'] }, { roles: ['read'] }], 2)).toBe(true);
-    expect(grantsCoverRecipients(207, [{ roles: ['read'] }, { roles: ['read'] }], 2)).toBe(false);
-    expect(grantsCoverRecipients(200, [{ roles: ['read'] }], 2)).toBe(false);
-    expect(grantsCoverRecipients(200, [{ roles: ['read'] }, { roles: [] }], 2)).toBe(false);
+  const read = (id: string) => ({ roles: ['read'], grantedToV2: { user: { id } } });
+  it('needs HTTP 200 and a read permission naming every recipient', () => {
+    expect(grantsCoverRecipients(200, [read('A'), read('b')], ['a', 'B'])).toBe(true);
+    expect(grantsCoverRecipients(207, [read('a'), read('b')], ['a', 'b'])).toBe(false);
+    expect(grantsCoverRecipients(200, [read('a'), read('a')], ['a', 'b'])).toBe(false);
+    expect(grantsCoverRecipients(200, [read('a'), { roles: ['write'], grantedToV2: { user: { id: 'b' } } }], ['a', 'b'])).toBe(false);
   });
 });

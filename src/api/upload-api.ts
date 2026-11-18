@@ -20,6 +20,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENTS, MRI_ORGID_PREFIX, SELF_
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
 const UPLOAD_TIMEOUT_MS = 120_000;
+const CLEANUP_DEADLINE_MS = 20_000;
 
 const AMS_HOST = /(^|\.)asm\.skype\.com$|\.asyncgw\.teams\.microsoft\.com$/;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -274,14 +275,23 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
 
 /** Plain fetch: the shared client refuses every call during a rate-limit window, and cleanup must still run. */
 async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
+  // The session lock is held meanwhile, so cleanup has a hard deadline and honours Retry-After within it.
+  const deadline = Date.now() + CLEANUP_DEADLINE_MS;
   const left: string[] = [];
   for (const item of items) {
     let deleted = false;
-    for (let attempt = 0; attempt < 3 && !deleted; attempt++) {
-      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, { method: 'DELETE', headers: auth })
-        .catch(() => null);
+    while (!deleted && Date.now() < deadline) {
+      const response = await fetch(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+        headers: auth,
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      }).catch(() => null);
       deleted = response !== null && (response.ok || response.status === 404);
+      if (!deleted) {
+        const retryAfterSeconds = Number(response?.headers.get('retry-after'));
+        const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 1000;
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(retryAfterMs, deadline - Date.now()))));
+      }
     }
     if (!deleted) left.push(item.name);
   }
@@ -291,7 +301,7 @@ async function deleteDriveItems(auth: Record<string, string>, items: UploadedDri
 function cleanupNote(left: string[]): string {
   return left.length === 0
     ? 'The uploaded files were deleted, so nobody kept access.'
-    : `Could not delete ${left.join(', ')} from your OneDrive "${CHAT_FILES_FOLDER}" folder; delete them there to revoke access.`;
+    : `Could not delete ${left.join(', ')} from your OneDrive "${CHAT_FILES_FOLDER}" folder within ${CLEANUP_DEADLINE_MS / 1000}s; the chat members may still have read access until you delete them there.`;
 }
 
 async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Result<void>> {
@@ -307,10 +317,22 @@ async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Resu
   return created.ok || created.error.message.includes('409') ? ok(undefined) : created;
 }
 
-export function grantsCoverRecipients(status: number, permissions: Array<{ roles?: string[] }> | undefined, recipients: number): boolean {
-  return status === 200
-    && (permissions?.length ?? 0) === recipients
-    && (permissions ?? []).every(permission => permission.roles?.includes('read'));
+interface GrantedPermission {
+  roles?: string[];
+  grantedToV2?: { user?: { id?: string } };
+  grantedToIdentitiesV2?: Array<{ user?: { id?: string } }>;
+}
+
+export function grantsCoverRecipients(status: number, permissions: GrantedPermission[] | undefined, recipientIds: string[]): boolean {
+  if (status !== 200) return false;
+  const readers = new Set<string>();
+  for (const permission of permissions ?? []) {
+    if (!permission.roles?.includes('read')) continue;
+    for (const user of [permission.grantedToV2?.user, ...(permission.grantedToIdentitiesV2 ?? []).map(identity => identity.user)]) {
+      if (user?.id) readers.add(user.id.toLowerCase());
+    }
+  }
+  return recipientIds.every(id => readers.has(id.toLowerCase()));
 }
 
 interface UploadedFiles {
@@ -359,7 +381,7 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
 
   if (members.value.length > 0) {
     for (const item of items) {
-      const invited = await httpRequest<{ value?: Array<{ roles?: string[] }> }>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
+      const invited = await httpRequest<{ value?: GrantedPermission[] }>(`${GRAPH}/me/drive/items/${encodeURIComponent(item.id)}/invite`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -370,7 +392,7 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
         }),
       });
       if (!invited.ok) return fail({ message: `Could not share ${item.name} with the chat members: ${invited.error.message}.` });
-      if (!grantsCoverRecipients(invited.value.status, invited.value.data.value, members.value.length)) {
+      if (!grantsCoverRecipients(invited.value.status, invited.value.data.value, members.value)) {
         return fail({ message: `Only part of the chat could be given read access to ${item.name} (HTTP ${invited.value.status}).` });
       }
     }

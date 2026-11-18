@@ -21,6 +21,7 @@ const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
 const UPLOAD_TIMEOUT_MS = 120_000;
 
+const AMS_HOST = /(^|\.)asm\.skype\.com$|\.asyncgw\.teams\.microsoft\.com$/;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
 export interface OutgoingAttachments {
@@ -112,8 +113,11 @@ export function buildFileEntry(item: UploadedDriveItem, siteUrl: string): Record
 /** Any agent reaching this server can name a path, so dotfiles and the session store never leave. */
 async function isProtectedPath(resolved: string): Promise<boolean> {
   if (resolved.split(sep).some(segment => segment.startsWith('.'))) return true;
-  const dirs = await Promise.all([CONFIG_DIR, join(homedir(), 'Library', 'Keychains')]
-    .map(dir => realpath(dir).catch(() => dir)));
+  const home = homedir();
+  const browserData = ['Google/Chrome', 'Microsoft Edge', 'BraveSoftware', 'Firefox'].map(dir => join(home, 'Library', 'Application Support', dir));
+  const candidates = [CONFIG_DIR, join(home, 'Library', 'Keychains'), join(home, 'Library', 'Cookies'), ...browserData, process.env.TEAMS_EXISTING_CHROME_DIR]
+    .filter((dir): dir is string => Boolean(dir));
+  const dirs = await Promise.all(candidates.map(dir => realpath(dir).catch(() => dir)));
   const target = resolved.toLowerCase();
   return dirs.some(dir => {
     const base = dir.toLowerCase();
@@ -132,6 +136,7 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
     return err(createError(ErrorCode.INVALID_INPUT, `At most ${MAX_OUTGOING_ATTACHMENTS} attachments per message.`));
   }
   const files: LocalFile[] = [];
+  let totalBytes = 0;
   for (const path of paths) {
     if (!isAbsolute(path)) {
       return err(createError(ErrorCode.INVALID_INPUT, `Attachment path must be absolute: ${path}`));
@@ -148,7 +153,7 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
       return err(createError(ErrorCode.INVALID_INPUT,
         `Attachment is in a hidden or protected location (dotfiles, session or credential stores): ${path}`));
     }
-    // The checked descriptor is the one read, so a swapped symlink cannot redirect the upload.
+    // Opened without following a final symlink, so the size checked is the content read.
     let handle;
     try {
       handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -161,9 +166,10 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
       if (!info.isFile()) {
         return err(createError(ErrorCode.INVALID_INPUT, `Attachment is not a regular file: ${path}`));
       }
-      if (info.size === 0 || info.size > MAX_ATTACHMENT_BYTES) {
+      totalBytes += info.size;
+      if (info.size === 0 || totalBytes > MAX_ATTACHMENT_BYTES) {
         return err(createError(ErrorCode.INVALID_INPUT,
-          `Attachment must be between 1 byte and ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
+          `Attachments must not be empty and must total at most ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB: ${path}`));
       }
       bytes = await handle.readFile();
     } finally {
@@ -181,7 +187,7 @@ async function checkFiles(conversationId: string, paths: string[]): Promise<Resu
 
 async function uploadImage(conversationId: string, file: LocalFile): Promise<Result<string>> {
   const amsUrl = getAmsBaseUrl();
-  if (!amsUrl) {
+  if (!amsUrl || !AMS_HOST.test(new URL(amsUrl).hostname)) {
     return err(createError(ErrorCode.API_ERROR,
       'The Teams session does not list a media service, so images cannot be uploaded. Run teams_login with refresh: true.'));
   }
@@ -202,7 +208,7 @@ async function uploadImage(conversationId: string, file: LocalFile): Promise<Res
   });
   if (!created.ok) return created;
   const objectId = created.value.data.id;
-  if (!objectId) {
+  if (!objectId || !/^[A-Za-z0-9_-]+$/.test(objectId)) {
     return err(createError(ErrorCode.API_ERROR, 'The media service did not return an object id for the image.'));
   }
 
@@ -233,12 +239,14 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
     { method: 'GET', headers: getSkypeAuthHeaders(auth.skypeToken, auth.authToken, baseUrl) }
   );
   if (!response.ok) return response;
-  const ids = (response.value.data.members ?? [])
-    .map(member => member.id ?? '')
-    .filter(id => id.startsWith(MRI_ORGID_PREFIX))
-    .map(id => id.slice(MRI_ORGID_PREFIX.length))
-    .filter(id => id !== self);
-  return ok(ids);
+  // Bots (28:) never open files; anyone else outside the organisation cannot be invited by object id.
+  const people = (response.value.data.members ?? []).map(member => member.id ?? '').filter(id => !id.startsWith('28:'));
+  const outsiders = people.filter(id => !id.startsWith(MRI_ORGID_PREFIX));
+  if (outsiders.length > 0) {
+    return err(createError(ErrorCode.INVALID_INPUT,
+      `This chat has ${outsiders.length} member(s) outside your organisation who cannot be given access to an uploaded file. Send images, or share a link instead.`));
+  }
+  return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
 async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<Result<string>> {

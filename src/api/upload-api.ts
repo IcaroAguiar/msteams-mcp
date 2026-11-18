@@ -272,11 +272,7 @@ async function chatMemberObjectIds(conversationId: string): Promise<Result<strin
   return ok(people.map(id => id.slice(MRI_ORGID_PREFIX.length)).filter(id => id !== self));
 }
 
-/**
- * Deletes uploads, which revokes their grants. Plain fetch on purpose: the
- * shared client refuses every call during a rate-limit window, and cleanup must
- * still be attempted. Returns the names it could not delete.
- */
+/** Plain fetch: the shared client refuses every call during a rate-limit window, and cleanup must still run. */
 async function deleteDriveItems(auth: Record<string, string>, items: UploadedDriveItem[]): Promise<string[]> {
   const left: string[] = [];
   for (const item of items) {
@@ -311,7 +307,6 @@ async function ensureChatFilesFolder(auth: Record<string, string>): Promise<Resu
   return created.ok || created.error.message.includes('409') ? ok(undefined) : created;
 }
 
-/** A grant is complete when every recipient holds a read permission. */
 export function grantsCoverRecipients(status: number, permissions: Array<{ roles?: string[] }> | undefined, recipients: number): boolean {
   return status === 200
     && (permissions?.length ?? 0) === recipients
@@ -323,7 +318,6 @@ interface UploadedFiles {
   discard: () => Promise<string>;
 }
 
-/** Files are read and uploaded one at a time, and shared only after all uploads succeed. */
 async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<Result<UploadedFiles>> {
   const tokenResult = await requireGraphTokenAsync();
   if (!tokenResult.ok) return tokenResult;
@@ -384,7 +378,6 @@ async function uploadFiles(conversationId: string, files: LocalFile[]): Promise<
   return ok({ filesProperty: JSON.stringify(items.map(item => buildFileEntry(item, siteUrl))), discard });
 }
 
-/** Uploads everything before the message is sent, so a failure sends nothing. */
 export async function prepareAttachments(conversationId: string, paths: string[]): Promise<Result<OutgoingAttachments>> {
   const checked = checkFiles(conversationId, paths);
   if (!checked.ok) return checked;

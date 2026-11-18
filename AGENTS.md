@@ -60,6 +60,7 @@ src/
 │   ├── tags-api.ts       # Channel tags (mt/part teams/{groupId}/tags)
 │   ├── assignments-api.ts # EDU Assignments (assignments.edu.cloud.microsoft, OneNote EDU)
 │   ├── graph-files-api.ts # File downloads via Microsoft Graph (shared files and assignment attachments)
+│   ├── upload-api.ts     # Outgoing attachments: images to AMS (inline), files to OneDrive + share (teams_send_message attachments)
 │   ├── attachments-api.ts # Saves message images/files to the private attachments directory (teams_download_attachment)
 │   └── profile-api.ts    # Resolve MRIs to profiles (middleTier fetchShortProfile)
 ├── browser/              # Playwright browser automation (login only)
@@ -159,6 +160,8 @@ Different Teams APIs use different auth mechanisms:
 | **Profiles** (mt/part fetchShortProfile) | Skype Spaces token + `skypetoken_asm` | `requireSkypeSpacesAuthWithConfig()` |
 | **Tags** (mt/part teams/{groupId}/tags) | Skype Spaces token + `skypetoken_asm` | `requireSkypeSpacesAuth()` |
 | **File downloads** (Graph drive items; SharePoint URLs resolved via `/shares`) | Teams client's Graph JWT (aud `https://graph.microsoft.com`); the resulting `downloadUrl` is pre-authenticated and gets no header | `requireGraphTokenAsync()` |
+| **Image upload** (AMS, `ams` URL from `DISCOVER-REGION-GTM`) | `Authorization: skype_token {skypeToken}` + `X-Ms-Client-Version` (without it AMS answers 400 "platform id") | `extractMessageAuth()` + `getAmsBaseUrl()` |
+| **File upload** (Graph `/me/drive`, `Microsoft Teams Chat Files` folder, then `/invite` to chat members) | Teams client's Graph JWT | `requireGraphTokenAsync()` |
 | **Assignments** (assignments.edu.cloud.microsoft) | JWT Bearer for the Assignments app (aud `8f348934-…`) + `MS-Int-AppID: assignments-ui` header | `requireAssignmentsTokenAsync()` |
 
 The `extract*`/`getValid*` helpers live in `auth/token-extractor`; the `require*` guards live in `utils/auth-guards`. Notes:

@@ -26,9 +26,10 @@ import {
   waitForReply,
 } from '../api/chatsvc-api.js';
 import { getFavorites, addFavorite, removeFavorite, getCustomEmojis } from '../api/csa-api.js';
+import { prepareAttachments, type OutgoingAttachments } from '../api/upload-api.js';
 import { parseTeamsMessageUrl } from '../utils/parsers.js';
 import { ErrorCode, createError } from '../types/errors.js';
-import { SELF_CHAT_ID, MAX_THREAD_LIMIT, DEFAULT_THREAD_LIMIT, MAX_WAIT_SECONDS, STANDARD_EMOJIS } from '../constants.js';
+import { SELF_CHAT_ID, MAX_THREAD_LIMIT, DEFAULT_THREAD_LIMIT, MAX_WAIT_SECONDS, STANDARD_EMOJIS, MAX_OUTGOING_ATTACHMENTS } from '../constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -41,6 +42,7 @@ export const SendMessageInputSchema = z.object({
   contentType: z.enum(['auto', 'text', 'html', 'markdown']).optional(),
   subject: z.string().optional(),
   scheduleAt: z.string().optional(),
+  attachments: z.array(z.string().min(1)).max(MAX_OUTGOING_ATTACHMENTS).optional(),
 });
 
 export const FavoriteInputSchema = z.object({
@@ -138,7 +140,7 @@ export const WaitForReplyInputSchema = z.object({
 
 const sendMessageToolDefinition: Tool = {
   name: 'teams_send_message',
-  description: 'Send a message to a Teams conversation. Use markdown for formatting (not HTML): **bold**, *italic*, ~~strikethrough~~, `code`, ```code blocks```, lists, newlines, and tables. Tables use standard markdown table syntax:\n| Item | Price |\n|------|-------|\n| Apple | $1.00 |\n(with a header row, a |---|---| separator row, then data rows — they render as a real table in Teams). Supports @mentions: people with @[Name](mri) (MRI from teams_search_people) and channel tags with @[TagName](tag:tagId) (IDs from teams_get_tags). Markdown links [text](url) support http(s) and mailto. Defaults to self-notes (48:notes). For channel thread replies, provide replyToMessageId. For a new channel thread with a title, provide subject. To schedule for later, provide scheduleAt (ISO 8601). Set contentType to "text" to send content verbatim without markdown interpretation.',
+  description: 'Send a message to a Teams conversation. Use markdown for formatting (not HTML): **bold**, *italic*, ~~strikethrough~~, `code`, ```code blocks```, lists, newlines, and tables. Tables use standard markdown table syntax:\n| Item | Price |\n|------|-------|\n| Apple | $1.00 |\n(with a header row, a |---|---| separator row, then data rows — they render as a real table in Teams). Supports @mentions: people with @[Name](mri) (MRI from teams_search_people) and channel tags with @[TagName](tag:tagId) (IDs from teams_get_tags). Markdown links [text](url) support http(s) and mailto. Defaults to self-notes (48:notes). For channel thread replies, provide replyToMessageId. For a new channel thread with a title, provide subject. To schedule for later, provide scheduleAt (ISO 8601). Set contentType to "text" to send content verbatim without markdown interpretation. To send screenshots or files, pass their absolute local paths in attachments.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -165,7 +167,13 @@ const sendMessageToolDefinition: Tool = {
       },
       scheduleAt: {
         type: 'string',
-        description: 'Schedule the message for future delivery. ISO 8601 (e.g. "2026-04-11T09:00:00Z"); a timezone-less value is treated as UTC. Cannot be combined with @mentions or replyToMessageId.',
+        description: 'Schedule the message for future delivery. ISO 8601 (e.g. "2026-04-11T09:00:00Z"); a timezone-less value is treated as UTC. Cannot be combined with @mentions, replyToMessageId or attachments.',
+      },
+      attachments: {
+        type: 'array',
+        items: { type: 'string' },
+        maxItems: MAX_OUTGOING_ATTACHMENTS,
+        description: `Absolute paths of local files to attach (up to ${MAX_OUTGOING_ATTACHMENTS}, 100 MB each). Images (png, jpg, jpeg, gif, webp) appear inline below the text, like a pasted screenshot, in chats and channels. Other files (pdf, docx, zip...) are uploaded to your OneDrive "Microsoft Teams Chat Files" folder, shared read-only with the chat members, and shown as a file card; chats only, not channels. Every file is uploaded before the message is sent, so a failed upload sends nothing.`,
       },
     },
     required: ['content'],
@@ -554,11 +562,24 @@ const waitForReplyToolDefinition: Tool = {
 async function handleSendMessage(
   input: z.infer<typeof SendMessageInputSchema>
 ): Promise<ToolResult> {
+  let attachments: OutgoingAttachments | undefined;
+  if (input.attachments?.length) {
+    if (input.scheduleAt) {
+      return { success: false, error: createError(ErrorCode.INVALID_INPUT, 'Scheduled messages cannot carry attachments. Remove scheduleAt or attachments.') };
+    }
+    const prepared = await prepareAttachments(input.conversationId, input.attachments);
+    if (!prepared.ok) {
+      return { success: false, error: prepared.error };
+    }
+    attachments = prepared.value;
+  }
+
   const result = await sendMessage(input.conversationId, input.content, {
     replyToMessageId: input.replyToMessageId,
     contentType: input.contentType,
     subject: input.subject,
     scheduleAt: input.scheduleAt,
+    attachments,
   });
 
   if (!result.ok) {
@@ -586,6 +607,9 @@ async function handleSendMessage(
     timestamp: result.value.timestamp,
     conversationId: input.conversationId,
   };
+  if (attachments) {
+    response.attachments = attachments.sent;
+  }
 
   // Always include serverMessageId - this is the ID to use for reactions, edits, etc.
   if (serverMessageId) {

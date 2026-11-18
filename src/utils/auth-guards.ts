@@ -259,6 +259,11 @@ export function getTeamsBaseUrl(): string {
   return getRegionConfig()?.teamsBaseUrl ?? DEFAULT_TEAMS_BASE_URL;
 }
 
+/** Async Media Service base URL for chat images, or null when the session lists none. */
+export function getAmsBaseUrl(): string | null {
+  return getRegionConfig()?.amsUrl ?? null;
+}
+
 /**
  * Gets the CSA (chatsvcagg) region from session config.
  *

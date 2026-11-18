@@ -16,6 +16,7 @@ import { resolveNames } from './profile-api.js';
 import { SELF_CHAT_ID, MRI_ORGID_PREFIX, DEFAULT_WAIT_SECONDS, DEFAULT_WAIT_INTERVAL_SECONDS, MAX_WAIT_SECONDS } from '../constants.js';
 import { formatHumanReadableDate } from './chatsvc-common.js';
 import { extractAttachments, parseSystemEvent, type MessageAttachment } from '../utils/parsers-message-parts.js';
+import type { OutgoingAttachments } from './upload-api.js';
 import type { RawChatsvcMessage, RawConversationResponse, RawCreateThreadResponse } from '../types/api-responses.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +129,8 @@ export interface SendMessageOptions {
    * combined with mentions or a thread reply.
    */
   scheduleAt?: string;
+  /** Uploaded attachments from `prepareAttachments()`; forces an HTML message. */
+  attachments?: OutgoingAttachments;
 }
 
 /** Result of getting a 1:1 conversation. */
@@ -233,6 +236,12 @@ export async function sendMessage(
     return ok({ messageId: clientMessageId, scheduledFor: parsedTime.value.iso });
   }
 
+  if (options.attachments) {
+    const html = resolved.messagetype === 'Text' ? resolved.content.split('\n').map(escapeHtmlChars).join('<br>') : resolved.content;
+    resolved.content = html + options.attachments.imagesHtml;
+    resolved.messagetype = 'RichText/Html';
+  }
+
   // Build the message body
   const body: Record<string, unknown> = {
     content: resolved.content,
@@ -249,6 +258,9 @@ export async function sendMessage(
   }
   if (subject && subject.trim()) {
     properties.subject = subject.trim();
+  }
+  if (options.attachments?.filesProperty) {
+    properties.files = options.attachments.filesProperty;
   }
   if (Object.keys(properties).length > 0) {
     body.properties = properties;

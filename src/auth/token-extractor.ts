@@ -257,6 +257,8 @@ export interface RegionConfig {
   // Extracted base URLs for constructing other endpoints
   /** Teams base URL (e.g., "https://teams.microsoft.com" or "https://teams.microsoft.us" for GCC). */
   teamsBaseUrl: string;
+  /** Async Media Service URL for chat images (e.g., "https://us-api.asm.skype.com"), when the session lists one. */
+  amsUrl?: string;
 }
 
 /**
@@ -334,6 +336,7 @@ export function extractRegionConfig(state?: SessionState): RegionConfig | null {
         chatServiceUrl,
         csaServiceUrl: csaServiceUrl ?? `${teamsBaseUrl}/api/csa/${region}`,
         teamsBaseUrl,
+        amsUrl: data.item?.ams?.replace(/\/+$/, '') || undefined,
       };
     } catch {
       continue;

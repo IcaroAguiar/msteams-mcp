@@ -42,7 +42,7 @@ export const SendMessageInputSchema = z.object({
   contentType: z.enum(['auto', 'text', 'html', 'markdown']).optional(),
   subject: z.string().optional(),
   scheduleAt: z.string().optional(),
-  attachments: z.array(z.string().min(1)).max(MAX_OUTGOING_ATTACHMENTS).optional(),
+  attachments: z.array(z.string().min(1)).max(MAX_OUTGOING_ATTACHMENTS, `At most ${MAX_OUTGOING_ATTACHMENTS} attachments per message; send the rest in another message.`).optional(),
 });
 
 export const FavoriteInputSchema = z.object({

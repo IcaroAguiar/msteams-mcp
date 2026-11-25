@@ -680,7 +680,7 @@ export async function deleteMessage(
  */
 export async function getConversationProperties(
   conversationId: string
-): Promise<Result<{ displayName?: string; conversationType?: string }>> {
+): Promise<Result<{ displayName?: string; conversationType?: string; groupId?: string }>> {
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) {
     return authResult;
@@ -766,7 +766,7 @@ export async function getConversationProperties(
     }
   }
 
-  return ok({ displayName, conversationType });
+  return ok({ displayName, conversationType, groupId: threadProps?.groupId });
 }
 
 /**

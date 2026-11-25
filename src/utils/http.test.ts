@@ -336,6 +336,47 @@ describe('httpRequest', () => {
   });
 });
 
+describe('httpRequest body limits', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const streamed = (chunks: string[], stallAfter: boolean) => vi.fn(async (_url: string, init: RequestInit) =>
+    new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        if (!stallAfter) controller.close();
+        init.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/html' } }));
+
+  it('keeps the deadline until the body ends and stops reading at maxResponseBytes', async () => {
+    vi.stubGlobal('fetch', streamed(['<p>partial'], true));
+    const slow = await httpRequest('https://slow.example.com/page', { timeoutMs: 50, maxRetries: 1 });
+    expect(slow).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+
+    vi.stubGlobal('fetch', streamed(['<p>caf\u00e9', ' and more</p>'], true));
+    const large = await httpRequest<string>('https://large.example.com/page', { timeoutMs: 1000, maxResponseBytes: 7 });
+    expect(large).toMatchObject({ ok: true, value: { data: '<p>caf', truncated: true } });
+
+    vi.stubGlobal('fetch', streamed(['<p>caf\uFFFD', '\u00e9 and more</p>'], true));
+    const replacement = await httpRequest<string>('https://large.example.com/page', { timeoutMs: 1000, maxResponseBytes: 9 });
+    expect(replacement).toMatchObject({ ok: true, value: { data: '<p>caf\uFFFD', truncated: true } });
+  });
+
+  it('caps an error body and returns a manual redirect without waiting for its body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('x'.repeat(5000), { status: 403 })));
+    const denied = await httpRequest('https://denied.example.com/page', { maxResponseBytes: 16, maxRetries: 1 });
+    expect(denied).toMatchObject({ ok: false, error: { message: `HTTP 403: ${'x'.repeat(16)}` } });
+
+    const body = new ReadableStream<Uint8Array>({ start() { /* never sends */ } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 302, headers: { Location: 'https://next.example.com/' } })));
+    const moved = await httpRequest('https://moved.example.com/page', { redirect: 'manual', timeoutMs: 50, maxRetries: 1, maxResponseBytes: 16 });
+    expect(moved).toMatchObject({ ok: true, value: { status: 302 } });
+    expect((moved as { value: { headers: Headers } }).value.headers.get('location')).toBe('https://next.example.com/');
+  });
+});
+
 describe('clearRateLimitState', () => {
   beforeEach(() => {
     clearRateLimitState();

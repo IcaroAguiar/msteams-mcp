@@ -33,6 +33,7 @@ src/
 │   ├── meeting-tools.ts  # Calendar and meeting tools
 │   ├── file-tools.ts     # Shared files and file download tools
 │   ├── tag-tools.ts      # Channel tag tools
+│   ├── tab-tools.ts      # Conversation tabs and Notes/Loop page text (read-only)
 │   ├── assignment-tools.ts # EDU Assignments tools (list, get with attachments, submission actions)
 │   └── auth-tools.ts     # Login and status tools
 ├── auth/                 # Authentication and credential management
@@ -60,6 +61,7 @@ src/
 │   ├── tags-api.ts       # Channel tags (mt/part teams/{groupId}/tags)
 │   ├── assignments-api.ts # EDU Assignments (assignments.edu.cloud.microsoft, OneNote EDU)
 │   ├── graph-files-api.ts # File downloads via Microsoft Graph (shared files and assignment attachments)
+│   ├── tabs-api.ts       # Chat/channel tabs (Graph), a chat's Notes page (chatsvc FileAdd event), Loop page text (Graph format=html)
 │   ├── upload-api.ts     # Outgoing attachments: images to AMS (inline), files to OneDrive + share (teams_send_message attachments)
 │   ├── attachments-api.ts # Saves message images/files to the private attachments directory (teams_download_attachment)
 │   └── profile-api.ts    # Resolve MRIs to profiles (middleTier fetchShortProfile)
@@ -69,7 +71,7 @@ src/
 │   └── auth.ts           # Authentication detection and manual login handling
 ├── utils/
 │   ├── parsers.ts        # Pure parsing functions (barrel; testable submodules)
-│   ├── parsers-*.ts      # Parser submodules (html, markdown, search, people, channels, identifiers, reactions, virtual)
+│   ├── parsers-*.ts      # Parser submodules (html, markdown, search, people, channels, identifiers, reactions, virtual, loop)
 │   ├── http.ts           # HTTP client with retry, timeout, error handling
 │   ├── api-config.ts     # API endpoints and header configuration
 │   ├── logger.ts         # Prefixed logger used for all production logging
@@ -159,6 +161,7 @@ Different Teams APIs use different auth mechanisms:
 | **Files** (Substrate AllFiles) | Substrate JWT + message auth for user MRI | `getValidSubstrateToken()` + `extractMessageAuth()` |
 | **Profiles** (mt/part fetchShortProfile) | Skype Spaces token + `skypetoken_asm` | `requireSkypeSpacesAuthWithConfig()` |
 | **Tags** (mt/part teams/{groupId}/tags) | Skype Spaces token + `skypetoken_asm` | `requireSkypeSpacesAuth()` |
+| **Tabs and Notes** (Graph `/chats/{id}/tabs`, `/teams/{groupId}/channels/{id}/tabs`, `/shares` + `content?format=html`; chatsvc history for the Notes FileAdd event) | Teams client's Graph JWT (`TeamsTab.ReadWrite.All`, `Files.ReadWrite.All`) + `skypetoken_asm` for the history scan | `requireGraphTokenAsync()` + `requireMessageAuthWithConfig()` |
 | **File downloads** (Graph drive items; SharePoint URLs resolved via `/shares`) | Teams client's Graph JWT (aud `https://graph.microsoft.com`); the resulting `downloadUrl` is pre-authenticated and gets no header | `requireGraphTokenAsync()` |
 | **Image upload** (AMS, `ams` URL from `DISCOVER-REGION-GTM`) | `Authorization: skype_token {skypeToken}` + `X-Ms-Client-Version` (without it AMS answers 400 "platform id") | `extractMessageAuth()` + `getAmsBaseUrl()` |
 | **File upload** (Graph `/me/drive`, `Microsoft Teams Chat Files` folder, then `/invite` to chat members) | Teams client's Graph JWT | `requireGraphTokenAsync()` |

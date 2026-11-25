@@ -63,6 +63,8 @@ This is a test script for verifying all MCP tools work correctly before release.
 |------|---------|
 | `teams_get_shared_files` | Get files/links shared in a conversation (channels, chats, meetings) |
 | `teams_download_file` | Download a shared file's webUrl or an assignment attachment's fileUrl to a local path |
+| `teams_get_tabs` | List a chat's or channel's tabs, including a chat's Notes page |
+| `teams_get_notes` | Read the text of Notes and Loop page tabs |
 
 ### Calendar & Meetings
 | Tool | Purpose |
@@ -187,6 +189,16 @@ When reading channel messages with `teams_get_thread`:
 3. Use skipToken from response to paginate if there are more files
 4. teams_download_file url="<a File item's webUrl>" outputPath="/tmp/file.docx" → saved file with size and SHA-256
 5. Repeat step 4 with the same outputPath → must fail (never overwrites)
+```
+
+### Read a chat's Notes and Loop tabs
+```
+1. Open "Notes" in a group chat in Teams and type a line, so the chat has a Notes page
+2. teams_get_tabs conversationId="<that chat>" → a tab with kind "notes", readable: true, and notesSearch.found: true
+3. teams_get_notes conversationId="<that chat>" → pages[0].text holds the typed line; lastModifiedBy is the editor
+4. teams_get_tabs conversationId="<a channel with a Page tab>" → the Page tab has kind "loop"; OneNote and Files tabs are readable: false with a reason
+5. teams_get_notes conversationId="<that channel>" → the Page text in pages; OneNote and Files under notRead with their links
+6. teams_get_notes url="https://example.com/x.loop" → INVALID_INPUT, no request sent
 ```
 
 ### Search emails

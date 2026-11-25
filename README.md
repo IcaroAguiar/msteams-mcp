@@ -54,7 +54,7 @@ That is it. `npx` downloads and runs the latest version. Ask your assistant to c
 
 Set `TEAMS_READ_ONLY=1` on the MCP server process to expose only chat-reading,
 people, status and normal login tools. Calls to hidden tools are rejected, as are
-`markRead: true` and `forceNew: true`. Email, `teams_download_file`, assignments and
+`markRead: true` and `forceNew: true`. Email, `teams_download_file`, tabs and notes, assignments and
 message mutations remain unavailable; `teams_download_attachment` stays available
 (it only writes to the private attachments folder, up to 100 MB per attachment). This is an execution policy, not reduced OAuth
 permissions: the captured account session remains sensitive.
@@ -264,11 +264,15 @@ See [CLI Usage](#cli-usage) for commands, or run `msteams` for the command list.
 | `teams_get_shared_files` | Get files and links shared in a conversation (supports pagination) |
 | `teams_download_file`    | Download a shared file or assignment attachment to a local path    |
 | `teams_download_attachment` | Save a message's pasted images and attached files to a private local folder |
+| `teams_get_tabs`         | List a chat's or channel's tabs (Notes, Loop pages, OneNote, Files, websites, apps) |
+| `teams_get_notes`        | Read a chat's Notes and Loop page tabs as plain text               |
 
 
 `teams_get_shared_files` returns both files (name, extension, URL, size) and links (URL, title), along with who shared each item. Works for channels, group chats, 1:1 chats, and meeting chats.
 
 `teams_download_file` takes a file's `webUrl` from `teams_get_shared_files`, or an attachment's `fileUrl` from `teams_get_assignment`. It downloads through Microsoft Graph using the Teams client's own access, so no extra sign-in is needed. Files stream straight to disk, never overwrite an existing file, and are removed if the download fails part-way. Links and Microsoft Forms aren't files and can't be downloaded.
+
+`teams_get_tabs` lists the tabs of a chat or channel with their kind and link. A chat's Notes tab is a Loop page that Teams records with a `ThreadActivity/FileAdd` event, so the tool finds it in the chat's recent history (the newest 2,000 messages). `teams_get_notes` returns the text of Notes and Loop page tabs (headings, bullets, checkboxes and tables kept as plain text), with the last editor and edit time; for OneNote, Files, website and app tabs it returns the link and why the text is not read. Both are read-only and use Microsoft Graph through the Teams session, like `teams_download_file`.
 
 Messages from `teams_get_thread` and `teams_get_message` list pasted images and attached files in `attachments`; an image-only message has empty `content`. `teams_download_attachment` saves them under the session directory (`attachments/`, owner-only `0700` directories and `0600` files) and returns local paths, reusing earlier downloads. Each attachment is capped at 100 MB; larger ones are reported as failed next to the others. It is available in read-only mode because it changes nothing in Teams. Call, membership and rename events carry `systemEvent` and a readable summary in `content` instead of their raw payload.
 

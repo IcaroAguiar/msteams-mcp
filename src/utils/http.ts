@@ -23,6 +23,8 @@ export interface HttpOptions extends Omit<RequestInit, 'signal'> {
   retryMaxDelayMs?: number;
   /** Safe to repeat after the request may have reached the server (default: by HTTP method). Mark read-only POSTs. */
   idempotent?: boolean;
+  /** Stop reading a text body after this many bytes and flag the response `truncated`. */
+  maxResponseBytes?: number;
 }
 
 /** Successful HTTP response. */
@@ -30,10 +32,20 @@ export interface HttpResponse<T = unknown> {
   status: number;
   headers: Headers;
   data: T;
+  /** The body was longer than `maxResponseBytes`; `data` holds only its start. */
+  truncated?: boolean;
 }
 
-/** Rate limit state tracking. */
-let rateLimitedUntil: number | null = null;
+/** Retry-After deadlines per host: one service's 429 must not block the others. */
+const rateLimitedUntil = new Map<string, number>();
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Makes an HTTP request with timeout, retry, and error handling.
@@ -48,12 +60,14 @@ export async function httpRequest<T = unknown>(
     retryBaseDelayMs = 1000,
     retryMaxDelayMs = 10000,
     idempotent = isIdempotent(options.method),
+    maxResponseBytes,
     ...fetchOptions
   } = options;
 
-  // Check rate limit state
-  if (rateLimitedUntil && Date.now() < rateLimitedUntil) {
-    const waitMs = rateLimitedUntil - Date.now();
+  const host = hostOf(url);
+  const limitedUntil = rateLimitedUntil.get(host);
+  if (limitedUntil !== undefined && Date.now() < limitedUntil) {
+    const waitMs = limitedUntil - Date.now();
     return err(createError(
       ErrorCode.RATE_LIMITED,
       `Rate limited. Retry after ${Math.ceil(waitMs / 1000)}s`,
@@ -65,7 +79,7 @@ export async function httpRequest<T = unknown>(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, idempotent);
+      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, idempotent, maxResponseBytes);
       
       if (result.ok) {
         return result;
@@ -73,9 +87,11 @@ export async function httpRequest<T = unknown>(
 
       lastError = result.error;
 
-      // Handle rate limiting
-      if (result.error.code === ErrorCode.RATE_LIMITED && result.error.retryAfterMs) {
-        rateLimitedUntil = Date.now() + result.error.retryAfterMs;
+      const retryAfterMs = result.error.code === ErrorCode.RATE_LIMITED ? result.error.retryAfterMs : undefined;
+      if (retryAfterMs) {
+        rateLimitedUntil.set(host, Date.now() + retryAfterMs);
+        // Retrying before Retry-After expires only earns another 429.
+        if (retryAfterMs > retryMaxDelayMs) return result;
       }
 
       // A request that may have been applied is repeated only when repeating it is harmless;
@@ -123,8 +139,10 @@ async function fetchWithTimeout<T>(
   options: RequestInit,
   timeoutMs: number,
   idempotent: boolean,
+  maxResponseBytes?: number,
 ): Promise<Result<HttpResponse<T>>> {
   const controller = new AbortController();
+  // The deadline covers the body too: a server can send headers promptly and then stall.
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -133,12 +151,14 @@ async function fetchWithTimeout<T>(
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
+    if (options.redirect === 'manual' && response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      return ok({ status: response.status, headers: response.headers, data: '' as T });
+    }
 
-    // Handle error responses
     if (!response.ok) {
       const retryAfterMs = extractRetryAfter(response.headers);
-      const errorText = await response.text().catch(() => '');
+      const { text: errorText } = await readText(response, maxResponseBytes).catch(() => ({ text: '' }));
       
       return err(createError(
         classifyHttpError(response.status, errorText),
@@ -147,26 +167,28 @@ async function fetchWithTimeout<T>(
       ));
     }
 
-    // Parse JSON response
     const contentType = response.headers.get('content-type') || '';
+    const { text, truncated } = await readText(response, maxResponseBytes);
     let data: T;
-    
+
     if (contentType.includes('application/json')) {
-      const text = await response.text();
+      if (truncated) {
+        return err(createError(ErrorCode.API_ERROR,
+          `Response is larger than ${maxResponseBytes} bytes`, { retryable: false }));
+      }
       data = text ? JSON.parse(text) as T : {} as T;
     } else {
-      data = await response.text() as unknown as T;
+      data = text as unknown as T;
     }
 
     return ok({
       status: response.status,
       headers: response.headers,
       data,
+      ...(truncated ? { truncated } : {}),
     });
 
   } catch (error) {
-    clearTimeout(timeoutId);
-
     if (error instanceof Error) {
       if (error.name === 'AbortError') {
         return err(createError(
@@ -191,6 +213,28 @@ async function fetchWithTimeout<T>(
       error instanceof Error ? error.message : String(error),
       { retryable: false }
     ));
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function readText(response: Response, maxBytes: number | undefined): Promise<{ text: string; truncated: boolean }> {
+  if (maxBytes === undefined || !response.body) return { text: await response.text(), truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return { text: text + decoder.decode(), truncated: false };
+    if (size + value.byteLength > maxBytes) {
+      // Not flushing the decoder drops only a character the cut split.
+      text += decoder.decode(value.subarray(0, maxBytes - size), { stream: true });
+      await reader.cancel().catch(() => undefined);
+      return { text, truncated: true };
+    }
+    text += decoder.decode(value, { stream: true });
+    size += value.byteLength;
   }
 }
 
@@ -226,5 +270,5 @@ function sleep(ms: number): Promise<void> {
  * Clears the rate limit state (for testing).
  */
 export function clearRateLimitState(): void {
-  rateLimitedUntil = null;
+  rateLimitedUntil.clear();
 }

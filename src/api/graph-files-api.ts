@@ -41,7 +41,7 @@ const SHAREPOINT_HOST = /\.sharepoint(?:-mil)?\.(?:com|us|de|cn)$/;
  * Map an accepted URL to the Graph drive-item URL to request, or null. A
  * SharePoint URL is only ever sent to Graph, base64url-encoded as a share ID.
  */
-function toDriveItemUrl(url: string): string | null {
+export function toDriveItemUrl(url: string): string | null {
   if (DRIVE_ITEM_URL.test(url)) return url;
   let parsed: URL;
   try { parsed = new URL(url); } catch { return null; }

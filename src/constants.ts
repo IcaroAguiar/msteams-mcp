@@ -145,6 +145,15 @@ export const DEFAULT_FILES_PAGE_SIZE = 25;
 /** Maximum page size for shared files. */
 export const MAX_FILES_PAGE_SIZE = 100;
 
+/** Messages per chatsvc page when looking for the event that created a chat's Notes page. */
+export const NOTES_SCAN_PAGE_SIZE = 200;
+
+/** Pages of chat history searched for that event (newest first) before giving up. */
+export const NOTES_SCAN_MAX_PAGES = 10;
+
+/** Longest Notes/Loop page text returned; longer text is cut and flagged as truncated. */
+export const MAX_NOTES_TEXT_CHARS = 100_000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Token Refresh
 // ─────────────────────────────────────────────────────────────────────────────

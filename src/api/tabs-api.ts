@@ -346,7 +346,7 @@ export async function readLoopPage(url: string): Promise<Result<LoopPage>> {
   const html = await renderLoopHtml(contentUrl);
   if (!html.ok) return html;
 
-  const fullText = loopHtmlToText(html.value.html);
+  const fullText = loopHtmlToText(html.value.html, { cut: html.value.truncated });
   const truncated = html.value.truncated || fullText.length > MAX_NOTES_TEXT_CHARS;
   let text = fullText.slice(0, MAX_NOTES_TEXT_CHARS);
   if (fullText.length > MAX_NOTES_TEXT_CHARS && /[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);

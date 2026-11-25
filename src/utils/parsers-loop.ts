@@ -71,12 +71,13 @@ export function decodeEntities(text: string): string {
 const BLOCK_TAGS = new Set(['p', 'section', 'article', 'blockquote', 'pre', 'table', 'tr', 'ul', 'ol', 'hr']);
 
 /** Loop HTML to text: `#` headings, `-`/`1.` bullets by depth, `[ ]`/`[x]`, `|` cells. */
-export function loopHtmlToText(html: string): string {
-  const source = html
+export function loopHtmlToText(html: string, { cut = false }: { cut?: boolean } = {}): string {
+  let source = html
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|style|head)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-    // A cut body can end inside a comment, a script or style block, or a tag.
-    .replace(/<!--[\s\S]*$|<(?:script|style)\b[\s\S]*$|<[^>]*$/i, '');
+    .replace(/<(script|style|head)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+  // Only a cut body can end inside a comment, a script or style block, or a tag; on a complete page
+  // the same pattern would also match `<script` inside an attribute value.
+  if (cut) source = source.replace(/<!--[\s\S]*$|<(?:script|style)\b[\s\S]*$|<[^>]*$/i, '');
 
   const lists: Array<{ ordered: boolean; next: number }> = [];
   // Loop wraps @mentions in `<div style="display: inline">`, which must not break the line.

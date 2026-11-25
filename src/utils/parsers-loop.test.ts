@@ -63,10 +63,15 @@ describe('loopHtmlToText', () => {
   });
 
   it('drops a comment, script or style block left open by a cut body', () => {
-    expect(loopHtmlToText('<p>Kept</p><!-- hidden <p>no</p>')).toBe('Kept');
-    expect(loopHtmlToText('<p>Kept</p><script>var secret = 1;')).toBe('Kept');
-    expect(loopHtmlToText('<p>Kept</p><style>p { color: red }')).toBe('Kept');
-    expect(loopHtmlToText('<p>Kept</p><div sty')).toBe('Kept');
+    const cut = { cut: true };
+    expect(loopHtmlToText('<p>Kept</p><!-- hidden <p>no</p>', cut)).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><script>var secret = 1;', cut)).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><style>p { color: red }', cut)).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><div sty', cut)).toBe('Kept');
+  });
+
+  it('keeps a complete page whose attribute mentions <script', () => {
+    expect(loopHtmlToText('<p title="a <script b">One</p><p>Two</p>')).toBe('One\nTwo');
   });
 
   it('returns an empty string for an empty page', () => {

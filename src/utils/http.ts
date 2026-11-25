@@ -151,10 +151,14 @@ async function fetchWithTimeout<T>(
       signal: controller.signal,
     });
 
-    const manualRedirect = options.redirect === 'manual' && response.status >= 300 && response.status < 400;
-    if (!response.ok && !manualRedirect) {
+    if (options.redirect === 'manual' && response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      return ok({ status: response.status, headers: response.headers, data: '' as T });
+    }
+
+    if (!response.ok) {
       const retryAfterMs = extractRetryAfter(response.headers);
-      const errorText = await response.text().catch(() => '');
+      const { text: errorText } = await readText(response, maxResponseBytes).catch(() => ({ text: '' }));
       
       return err(createError(
         classifyHttpError(response.status, errorText),
@@ -217,18 +221,19 @@ async function fetchWithTimeout<T>(
 async function readText(response: Response, maxBytes: number | undefined): Promise<{ text: string; truncated: boolean }> {
   if (maxBytes === undefined || !response.body) return { text: await response.text(), truncated: false };
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
+  let text = '';
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) return { text: new TextDecoder().decode(Buffer.concat(chunks)), truncated: false };
+    if (done) return { text: text + decoder.decode(), truncated: false };
     if (size + value.byteLength > maxBytes) {
-      chunks.push(value.subarray(0, maxBytes - size));
+      // Not flushing the decoder drops only a character the cut split.
+      text += decoder.decode(value.subarray(0, maxBytes - size), { stream: true });
       await reader.cancel().catch(() => undefined);
-      // The cut can split a multi-byte character.
-      return { text: new TextDecoder().decode(Buffer.concat(chunks)).replace(/\uFFFD$/, ''), truncated: true };
+      return { text, truncated: true };
     }
-    chunks.push(value);
+    text += decoder.decode(value, { stream: true });
     size += value.byteLength;
   }
 }

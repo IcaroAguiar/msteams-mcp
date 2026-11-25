@@ -12,7 +12,7 @@ import { requireGraphTokenAsync, requireMessageAuthWithConfig } from '../utils/a
 import { getSkypeAuthHeaders, CHATSVC_API } from '../utils/api-config.js';
 import { invalidateAccessToken } from '../auth/token-extractor.js';
 import { buildThreadMessagesUrl, cursorFromBackwardLink, getConversationProperties } from './chatsvc-messaging.js';
-import { toDriveItemUrl } from './graph-files-api.js';
+import { toDriveItemUrl, SHAREPOINT_HOST } from './graph-files-api.js';
 import { parseFileAddEvent, isChatNotesTarget, loopHtmlToText, type FileAddTarget } from '../utils/parsers-loop.js';
 import type { RawChatsvcMessage } from '../types/api-responses.js';
 import { MAX_LOOP_HTML_BYTES, MAX_NOTES_TEXT_CHARS, NOTES_SCAN_MAX_PAGES, NOTES_SCAN_PAGE_SIZE } from '../constants.js';
@@ -178,13 +178,15 @@ async function renderLoopHtml(contentUrl: string): Promise<Result<{ html: string
   if (!rendered.ok) return err(graphFailure(rendered.error, token.value));
 
   let page = rendered.value;
-  if (page.status >= 300 && page.status < 400) {
-    const location = storageLocation(page.headers.get('location'), contentUrl);
+  let from = contentUrl;
+  for (let hop = 0; isRedirect(page.status); hop++) {
+    const location = hop < MAX_STORAGE_REDIRECTS ? storageLocation(page.headers.get('location'), from) : undefined;
     if (!location) {
       return err(createError(ErrorCode.API_ERROR, 'Microsoft Graph redirected the Loop rendering to an unexpected location', { retryable: false }));
     }
     const stored = await httpRequest<string>(location, {
       method: 'GET',
+      redirect: 'manual',
       headers: { Accept: 'text/html' },
       maxResponseBytes: MAX_LOOP_HTML_BYTES,
     });
@@ -197,10 +199,11 @@ async function renderLoopHtml(contentUrl: string): Promise<Result<{ html: string
       return stored;
     }
     page = stored.value;
+    from = location;
   }
 
   const contentType = page.headers.get('content-type') ?? '';
-  if (!/^\s*text\/html\b/i.test(contentType) || typeof page.data !== 'string') {
+  if (contentType.split(';')[0].trim().toLowerCase() !== 'text/html' || typeof page.data !== 'string') {
     return err(createError(ErrorCode.API_ERROR,
       `Microsoft Graph did not return an HTML rendering of this Loop page (content type: ${contentType || 'none'})`,
       { retryable: false }));
@@ -208,11 +211,22 @@ async function renderLoopHtml(contentUrl: string): Promise<Result<{ html: string
   return ok({ html: page.data, truncated: page.truncated === true });
 }
 
+const MAX_STORAGE_REDIRECTS = 2;
+
+// files.1drv.com: the sample in learn.microsoft.com/graph/api/driveitem-get-content-format. *.svc.ms (where
+// Graph renders Loop HTML): "SharePoint Online and OneDrive for Business" in endpoints.office.com, ID 39.
+const ONEDRIVE_HOST = /\.(?:files\.1drv\.com|svc\.ms)$/;
+
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
 function storageLocation(location: string | null, base: string): string | undefined {
   if (!location) return undefined;
   try {
     const url = new URL(location, base);
-    return url.protocol === 'https:' ? url.toString() : undefined;
+    const trusted = SHAREPOINT_HOST.test(url.hostname) || ONEDRIVE_HOST.test(url.hostname);
+    return url.protocol === 'https:' && trusted && !url.username && !url.password && !url.port ? url.toString() : undefined;
   } catch {
     return undefined;
   }
@@ -334,7 +348,8 @@ export async function readLoopPage(url: string): Promise<Result<LoopPage>> {
 
   const fullText = loopHtmlToText(html.value.html);
   const truncated = html.value.truncated || fullText.length > MAX_NOTES_TEXT_CHARS;
-  const text = fullText.slice(0, MAX_NOTES_TEXT_CHARS);
+  let text = fullText.slice(0, MAX_NOTES_TEXT_CHARS);
+  if (fullText.length > MAX_NOTES_TEXT_CHARS && /[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
   return ok({
     name: item.name ?? '',
     webUrl: item.webUrl,

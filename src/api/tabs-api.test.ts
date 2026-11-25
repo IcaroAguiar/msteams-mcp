@@ -6,6 +6,7 @@ import { getConversationProperties } from './chatsvc-messaging.js';
 import { ok, err } from '../types/result.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { classifyTab, listConversationTabs, readLoopPage } from './tabs-api.js';
+import { MAX_NOTES_TEXT_CHARS } from '../constants.js';
 
 vi.mock('../utils/http.js', async (original) => ({
   ...await original<typeof import('../utils/http.js')>(),
@@ -195,6 +196,43 @@ describe('readLoopPage', () => {
     expect(storageUrl).toBe(storage);
     expect((storageOptions as { headers: Record<string, string> }).headers).not.toHaveProperty('Authorization');
     expect(invalidateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('follows the storage redirect only to SharePoint or OneDrive hosts, one hop at a time', async () => {
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(response('', { location: 'https://evil.example.com/page.html' }, 302));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: false, error: { code: ErrorCode.API_ERROR, message: expect.stringContaining('unexpected location') } });
+    expect(mockHttp).toHaveBeenCalledTimes(2);
+
+    mockHttp.mockClear();
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(response('', { location: 'https://region1-mediap.svc.ms/transform/x' }, 302))
+      .mockResolvedValueOnce(response('', { location: 'https://evil.sharepoint.com.example.net/x' }, 302));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: false, error: { message: expect.stringContaining('unexpected location') } });
+    expect(mockHttp).toHaveBeenCalledTimes(3);
+    expect(mockHttp.mock.calls[2][1]).toMatchObject({ redirect: 'manual' });
+  });
+
+  it('accepts text/html with parameters but not a type that only starts with text/html', async () => {
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(html('<p>Hi</p>'));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: true, value: { text: 'Hi' } });
+
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(response('<p>Hi</p>', { 'content-type': 'text/html+json' }));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: false, error: { code: ErrorCode.API_ERROR } });
+  });
+
+  it('does not split an emoji at the text limit', async () => {
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(html(`<p>${'a'.repeat(MAX_NOTES_TEXT_CHARS - 1)}\u{1F600}b</p>`));
+    const result = await readLoopPage(NOTES_URL);
+    expect(result).toMatchObject({ ok: true, value: { truncated: true, text: 'a'.repeat(MAX_NOTES_TEXT_CHARS - 1) } });
   });
 
   it('discards a token Graph rejects and never reports AUTH_EXPIRED', async () => {

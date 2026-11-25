@@ -62,6 +62,13 @@ describe('loopHtmlToText', () => {
     expect(loopHtmlToText(html)).toBe(['Name | Status', 'Café © 2026… | ✅ ok aéb \u2242\u0338', '?a=1&copy=2'].join('\n'));
   });
 
+  it('drops a comment, script or style block left open by a cut body', () => {
+    expect(loopHtmlToText('<p>Kept</p><!-- hidden <p>no</p>')).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><script>var secret = 1;')).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><style>p { color: red }')).toBe('Kept');
+    expect(loopHtmlToText('<p>Kept</p><div sty')).toBe('Kept');
+  });
+
   it('returns an empty string for an empty page', () => {
     expect(loopHtmlToText('<html><meta name="GENERATOR" content="Microsoft Loop"><body><div><div lang="pt-br"></div></div></body></html>')).toBe('');
   });

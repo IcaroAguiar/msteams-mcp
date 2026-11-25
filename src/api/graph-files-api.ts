@@ -35,7 +35,7 @@ import { DOWNLOAD_INACTIVITY_TIMEOUT_MS } from '../constants.js';
 const DRIVE_ITEM_URL = /^https:\/\/graph\.microsoft\.com\/v1\.0\/drives\/[A-Za-z0-9!_-]+\/items\/[A-Za-z0-9!_-]+$/;
 
 /** SharePoint/OneDrive hosts: web URLs to resolve, and the only download-link hosts. */
-const SHAREPOINT_HOST = /\.sharepoint(?:-mil)?\.(?:com|us|de|cn)$/;
+export const SHAREPOINT_HOST = /\.sharepoint(?:-mil)?\.(?:com|us|de|cn)$/;
 
 /**
  * Map an accepted URL to the Graph drive-item URL to request, or null. A

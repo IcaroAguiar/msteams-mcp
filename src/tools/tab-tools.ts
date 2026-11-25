@@ -1,7 +1,4 @@
-/**
- * Conversation tab tools: list a chat's or channel's tabs, and read the text of
- * its Notes and Loop pages. Read-only.
- */
+/** Conversation tab tools (read-only): list tabs and read Notes/Loop pages as text. */
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -128,5 +125,4 @@ export const getNotesTool: RegisteredTool<typeof GetNotesInputSchema> = {
   handler: handleGetNotes,
 };
 
-/** All tab tools. */
 export const tabTools = [getTabsTool, getNotesTool];

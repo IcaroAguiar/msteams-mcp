@@ -1,17 +1,8 @@
 /**
- * Conversation tabs and the text of chat Notes / Loop pages.
- *
- * - Channel and chat tabs come from Microsoft Graph (`/teams/{groupId}/channels/{id}/tabs`,
- *   `/chats/{id}/tabs`; `TeamsTab.ReadWrite.All` on the Teams client's Graph token).
- * - A chat's Notes tab is not a Graph tab: Teams stores it as a Loop file
- *   (`loop_loopThread.loop`) in a SharePoint Embedded container and announces it with a
- *   chatsvc `ThreadActivity/FileAdd` event (type `loop`, subtype `loopthread`). We find
- *   that event in the chat history and read the file through Graph.
- * - Loop files (chat Notes, channel Pages, Loop tabs) are read as text through Graph's
- *   `content?format=html` conversion, then flattened by `loopHtmlToText()`.
- *
- * Read-only. Like file downloads, Graph is optional: no failure here surfaces as
- * AUTH_REQUIRED/AUTH_EXPIRED, so it can never trigger the server's auto-login.
+ * A chat's Notes tab is not a Graph tab: Teams stores it as a Loop file in a SharePoint
+ * Embedded container and announces it with a chatsvc `ThreadActivity/FileAdd` event
+ * (type `loop`, subtype `loopthread`). Loop files are read through Graph's
+ * `content?format=html`. Graph is optional here: failures never surface as AUTH_*.
  */
 
 import { httpRequest } from '../utils/http.js';
@@ -37,14 +28,10 @@ export interface ConversationTab {
   kind: TabKind;
   app?: string;
   appId?: string;
-  /** URL of the tab's content (for Loop/Notes: the SharePoint file URL). */
   contentUrl?: string;
   websiteUrl?: string;
-  /** Teams deep link to the tab. */
   webUrl?: string;
-  /** True when `teams_get_notes` can return this tab's text. */
   readable: boolean;
-  /** Why the text cannot be read here, when `readable` is false. */
   reason?: string;
   createdAt?: string;
   createdBy?: string;
@@ -54,7 +41,6 @@ export interface ConversationTabs {
   conversationId: string;
   conversationType: 'channel' | 'chat';
   tabs: ConversationTab[];
-  /** How far the chat history was searched for the Notes page (chats only). */
   notesSearch?: { messagesScanned: number; reachedStart: boolean; found: boolean };
   /** Set when Graph could not list the app tabs; the Notes tab may still be present. */
   tabsError?: string;
@@ -70,7 +56,6 @@ export interface LoopPage {
   truncated: boolean;
 }
 
-// Well-known Teams app IDs for built-in tab types.
 const ONENOTE_APP = '0d820ecd-def2-4297-adad-78056cde7c78';
 const CHANNEL_PAGES_APP = '5ae80e49-7ada-461a-a6bd-c5df2e0cdb06';
 const FILES_APP = '3ed5b337-c2c9-4d5d-b7b4-84ff09a8fc1c';
@@ -146,10 +131,7 @@ export function notesTab(target: FileAddTarget): ConversationTab {
   };
 }
 
-/**
- * GET from Microsoft Graph with the Teams client's token. Maps auth failures away
- * from AUTH_* codes (see the module comment) and discards a rejected token.
- */
+/** Graph GET with the Teams token; auth failures never map to AUTH_* (no auto-login). */
 async function graphGet<T>(url: string, accept = 'application/json'): Promise<Result<T>> {
   const token = await requireGraphTokenAsync();
   if (!token.ok) return token;
@@ -176,10 +158,7 @@ function baseConversationId(conversationId: string): string {
   return conversationId.split(';')[0];
 }
 
-/**
- * Searches the chat history, newest first, for `ThreadActivity/FileAdd` events of
- * Loop files. The chat's Notes page is the newest `loopthread` one.
- */
+/** The chat's Notes page is the newest `loopthread` FileAdd event in its history. */
 async function findChatNotes(conversationId: string): Promise<Result<{
   target?: FileAddTarget; messagesScanned: number; reachedStart: boolean;
 }>> {
@@ -209,11 +188,7 @@ async function findChatNotes(conversationId: string): Promise<Result<{
   return ok({ messagesScanned, reachedStart: false });
 }
 
-/**
- * Lists a conversation's tabs: Graph app tabs for channels and chats, plus a chat's
- * Notes page (found in its history). A Graph failure is reported in `tabsError`
- * rather than hiding a Notes tab that was found.
- */
+/** Graph app tabs plus a chat's Notes page; a Graph failure goes to `tabsError`. */
 export async function listConversationTabs(conversationId: string): Promise<Result<ConversationTabs>> {
   const id = baseConversationId(conversationId);
   const props = await getConversationProperties(id);
@@ -263,10 +238,7 @@ interface RawLoopItem {
   parentReference?: { driveId?: string };
 }
 
-/**
- * Reads a Loop/Fluid file (chat Notes, channel Page, Loop tab) as plain text.
- * `url` is the SharePoint file URL (a tab's contentUrl) or a Graph drive-item URL.
- */
+/** Reads a Loop file (SharePoint URL or Graph drive-item URL) as plain text. */
 export async function readLoopPage(url: string): Promise<Result<LoopPage>> {
   const itemUrl = toDriveItemUrl(url);
   if (!itemUrl) {

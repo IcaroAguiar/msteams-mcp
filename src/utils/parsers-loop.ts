@@ -1,8 +1,4 @@
-/**
- * Pure parsers for chat Notes and Loop pages: the chatsvc `ThreadActivity/FileAdd`
- * event that records where a chat's Notes page lives, and the HTML that Microsoft
- * Graph's `content?format=html` conversion produces for a `.loop` file.
- */
+/** Parsers for the `ThreadActivity/FileAdd` event and Graph's Loop HTML rendering. */
 
 /** A file attached to a conversation, as recorded by a `ThreadActivity/FileAdd` event. */
 export interface FileAddTarget {
@@ -59,11 +55,7 @@ export function decodeEntities(text: string): string {
 
 const BLOCK_TAGS = new Set(['p', 'section', 'article', 'blockquote', 'pre', 'table', 'tr', 'ul', 'ol', 'hr']);
 
-/**
- * Converts Loop/Fluid HTML (Graph's `format=html` rendering) to readable plain
- * text: headings become `#` lines, list items `-`/`1.` bullets indented by depth,
- * checkboxes `[ ]`/`[x]`, table cells are separated by `|`, and blocks by line breaks.
- */
+/** Loop HTML to text: `#` headings, `-`/`1.` bullets by depth, `[ ]`/`[x]`, `|` cells. */
 export function loopHtmlToText(html: string): string {
   const source = html
     .replace(/<!--[\s\S]*?-->/g, '')

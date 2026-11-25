@@ -6,7 +6,7 @@ import type { RegisteredTool, ToolResult } from './index.js';
 import { handleApiResult } from './index.js';
 import { listConversationTabs, readLoopPage, type ConversationTab } from '../api/tabs-api.js';
 import { ErrorCode, createError } from '../types/errors.js';
-import { NOTES_SCAN_MAX_PAGES, NOTES_SCAN_PAGE_SIZE } from '../constants.js';
+import { MAX_LOOP_HTML_BYTES, NOTES_SCAN_MAX_PAGES, NOTES_SCAN_PAGE_SIZE } from '../constants.js';
 
 export const GetTabsInputSchema = z.object({
   conversationId: z.string().min(1),
@@ -26,7 +26,7 @@ const SEARCH_DEPTH = NOTES_SCAN_MAX_PAGES * NOTES_SCAN_PAGE_SIZE;
 
 const getTabsToolDefinition: Tool = {
   name: 'teams_get_tabs',
-  description: `List the tabs of a Teams chat or channel: name, kind, app, content URL and Teams link. kind is one of notes (a chat's Notes page), loop (a Loop page tab, e.g. channel "Pages"), onenote, files, website, wiki or other. readable: true means teams_get_notes can return the tab's text; otherwise reason says where its content lives. A chat's Notes tab is a Loop page that Teams announces with a ThreadActivity/FileAdd event; this tool finds it in the newest ${SEARCH_DEPTH} messages (notesSearch reports how far it looked). If Microsoft Graph cannot list app tabs, tabsError says why and any Notes tab is still returned. Read-only.`,
+  description: `List the tabs Microsoft Graph returns for a Teams chat or channel, plus a chat's Notes page: name, kind, app, content URL and Teams link. Graph returns tabs added to the conversation (Loop pages, OneNote, websites, other apps), not built-in ones such as Posts or the native Files tab (list those files with teams_get_shared_files). kind is one of notes (a chat's Notes page), loop (a Loop page tab, e.g. channel "Pages"), onenote, files, website, wiki or other. readable: true means teams_get_notes can return the tab's text; otherwise reason says where its content lives. A chat's Notes tab is a Loop page that Teams announces with a ThreadActivity/FileAdd event; this tool finds it in the newest ${SEARCH_DEPTH} messages (notesSearch reports how far it looked). If Microsoft Graph cannot list app tabs, tabsError ({code, message, retryable}) says why and any Notes tab is still returned. Read-only.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -41,7 +41,7 @@ const getTabsToolDefinition: Tool = {
 
 const getNotesToolDefinition: Tool = {
   name: 'teams_get_notes',
-  description: `Read the text of a chat's Notes and of Loop page tabs (e.g. channel "Pages") as plain text: headings as #, list items as - or 1., checkboxes as [ ]/[x], table cells separated by |. Pass conversationId to read every readable tab of that chat or channel (narrow to one with tabId from teams_get_tabs), or url to read one Loop file (a tab's contentUrl, or a .loop link shared in a message). Tabs that are not Loop pages (OneNote, Files, websites, apps) are listed under notRead with their link and the reason. Each page reports its last editor and edit time; text longer than 100,000 characters is cut (truncated: true). Read-only: never edits the notes. Uses Microsoft Graph via the existing Teams session; if Graph is unavailable only this tool and teams_get_tabs are affected.`,
+  description: `Read the text of a chat's Notes and of Loop page tabs (e.g. channel "Pages") as plain text: headings as #, list items as - or 1., checkboxes as [ ]/[x], table cells separated by |. Pass conversationId to read every readable tab of that chat or channel (narrow to one with tabId from teams_get_tabs), or url to read one Loop file (a tab's contentUrl, or a .loop link shared in a message). Tabs that are not Loop pages (OneNote, websites, other apps) are listed under notRead with their link and the reason. If Microsoft Graph cannot list the app tabs, tabsError says why: the Notes page is still read, and a tabId that only Graph could resolve fails with that error instead of NOT_FOUND. Each page reports its last editor and edit time; text longer than 100,000 characters, or a page whose HTML rendering exceeds ${MAX_LOOP_HTML_BYTES / (1024 * 1024)} MB, is cut (truncated: true). Read-only: never edits the notes. Uses Microsoft Graph via the existing Teams session; if Graph is unavailable only this tool and teams_get_tabs are affected.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -75,6 +75,16 @@ async function handleGetNotes(input: z.infer<typeof GetNotesInputSchema>): Promi
   const { tabs, notesSearch, tabsError } = listed.value;
 
   const selected = input.tabId ? tabs.filter(tab => tab.id === input.tabId) : tabs;
+  // Only the history scan yields notes: IDs; any other ID depends on the Graph listing.
+  const graphDependent = !input.tabId || !input.tabId.startsWith('notes:');
+  if (tabsError && graphDependent && selected.length === 0) {
+    return {
+      success: false,
+      error: createError(tabsError.code,
+        `Microsoft Graph could not list this conversation's tabs, so ${input.tabId ? `tab "${input.tabId}"` : 'its Loop tabs'} could not be checked: ${tabsError.message}`,
+        { retryable: tabsError.retryable }),
+    };
+  }
   if (input.tabId && selected.length === 0) {
     return {
       success: false,

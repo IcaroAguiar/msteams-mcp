@@ -55,9 +55,11 @@ describe('loopHtmlToText', () => {
     expect(loopHtmlToText(html)).toBe(['1. One', '  - [x] Done', '  - [ ] Todo', '2. Two'].join('\n'));
   });
 
-  it('separates table cells and decodes numeric entities', () => {
-    const html = '<table><tr><th>Name</th><th>Status</th></tr><tr><td>Caf&#233;</td><td>&#x2705; ok</td></tr></table>';
-    expect(loopHtmlToText(html)).toBe(['Name | Status', 'Café | ✅ ok'].join('\n'));
+  it('keeps each table row on one line with its cells separated, and decodes every entity form', () => {
+    const html = '<table><tr><th>Name</th><th>Status</th></tr>'
+      + '<tr><td><p>Caf&eacute;</p><p>&copy 2026&hellip;</p></td><td><p>&#x2705; ok</p><p>a&#233;b &NotEqualTilde;</p></td></tr></table>'
+      + '<p>?a=1&copy=2</p>';
+    expect(loopHtmlToText(html)).toBe(['Name | Status', 'Café © 2026… | ✅ ok aéb \u2242\u0338', '?a=1&copy=2'].join('\n'));
   });
 
   it('returns an empty string for an empty page', () => {

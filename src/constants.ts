@@ -154,6 +154,9 @@ export const NOTES_SCAN_MAX_PAGES = 10;
 /** Longest Notes/Loop page text returned; longer text is cut and flagged as truncated. */
 export const MAX_NOTES_TEXT_CHARS = 100_000;
 
+/** Most bytes of a Loop page's HTML rendering read; the rest is not downloaded. */
+export const MAX_LOOP_HTML_BYTES = 5 * 1024 * 1024;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Token Refresh
 // ─────────────────────────────────────────────────────────────────────────────

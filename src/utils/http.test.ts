@@ -336,6 +336,31 @@ describe('httpRequest', () => {
   });
 });
 
+describe('httpRequest body limits', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const streamed = (chunks: string[], stallAfter: boolean) => vi.fn(async (_url: string, init: RequestInit) =>
+    new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        if (!stallAfter) controller.close();
+        init.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/html' } }));
+
+  it('keeps the deadline until the body ends and stops reading at maxResponseBytes', async () => {
+    vi.stubGlobal('fetch', streamed(['<p>partial'], true));
+    const slow = await httpRequest('https://slow.example.com/page', { timeoutMs: 50, maxRetries: 1 });
+    expect(slow).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+
+    vi.stubGlobal('fetch', streamed(['<p>caf\u00e9', ' and more</p>'], true));
+    const large = await httpRequest<string>('https://large.example.com/page', { timeoutMs: 1000, maxResponseBytes: 7 });
+    expect(large).toMatchObject({ ok: true, value: { data: '<p>caf', truncated: true } });
+  });
+});
+
 describe('clearRateLimitState', () => {
   beforeEach(() => {
     clearRateLimitState();

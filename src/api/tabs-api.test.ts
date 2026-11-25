@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { httpRequest } from '../utils/http.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { httpRequest, clearRateLimitState } from '../utils/http.js';
 import { requireGraphTokenAsync, requireMessageAuthWithConfig } from '../utils/auth-guards.js';
 import { invalidateAccessToken } from '../auth/token-extractor.js';
 import { getConversationProperties } from './chatsvc-messaging.js';
@@ -7,7 +7,10 @@ import { ok, err } from '../types/result.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { classifyTab, listConversationTabs, readLoopPage } from './tabs-api.js';
 
-vi.mock('../utils/http.js', () => ({ httpRequest: vi.fn() }));
+vi.mock('../utils/http.js', async (original) => ({
+  ...await original<typeof import('../utils/http.js')>(),
+  httpRequest: vi.fn(),
+}));
 vi.mock('../utils/auth-guards.js', () => ({ requireGraphTokenAsync: vi.fn(), requireMessageAuthWithConfig: vi.fn() }));
 vi.mock('../auth/token-extractor.js', () => ({ invalidateAccessToken: vi.fn() }));
 vi.mock('./chatsvc-messaging.js', async (original) => ({
@@ -21,7 +24,8 @@ const CHANNEL = '19:def@thread.tacv2';
 const NOTES_URL = 'https://contoso.sharepoint.com/contentstorage/CSP_1/Document%20Library/19_abc_thread_v2/loop_loopThread.loop?nav=x';
 const PAGE_URL = 'https://contoso.sharepoint.com/:fl:/r/sites/team/Shared%20Documents/General/Plan.loop?d=w1&csf=1';
 
-const response = <T>(data: T) => ok({ status: 200, headers: new Headers(), data });
+const response = <T>(data: T, headers: Record<string, string> = {}, status = 200) => ok({ status, headers: new Headers(headers), data });
+const html = (data: string) => response(data, { 'content-type': 'text/html; charset=utf-8' });
 const fileAdd = (subtype: string) => ({
   messagetype: 'ThreadActivity/FileAdd',
   content: `<fileadd><target><id>t-${subtype}</id><uri>${NOTES_URL.replace(/&/g, '&amp;')}</uri><type>loop</type><subtype>${subtype}</subtype></target></fileadd>`,
@@ -99,7 +103,35 @@ describe('listConversationTabs', () => {
 
     expect(result.ok && result.value).toMatchObject({
       tabs: [{ kind: 'notes' }],
-      tabsError: expect.stringMatching(/^ACCESS_DENIED/),
+      tabsError: { code: ErrorCode.ACCESS_DENIED, retryable: false },
+    });
+  });
+
+  describe('when Graph answers 429', () => {
+    afterEach(() => {
+      clearRateLimitState();
+      vi.unstubAllGlobals();
+    });
+
+    it('still returns the Notes tab with tabsError, and the throttle holds back Graph only', async () => {
+      const { httpRequest: realHttpRequest } = await vi.importActual<typeof import('../utils/http.js')>('../utils/http.js');
+      mockHttp.mockImplementation(realHttpRequest);
+      vi.mocked(getConversationProperties).mockResolvedValue(ok({ conversationType: 'Chat' }));
+      const fetchMock = vi.fn(async (url: string) => url.startsWith('https://graph.microsoft.com')
+        ? new Response('Too Many Requests', { status: 429, headers: { 'Retry-After': '60' } })
+        : new Response(JSON.stringify({ messages: [fileAdd('loopthread')] }), { headers: { 'Content-Type': 'application/json' } }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      for (let call = 0; call < 2; call++) {
+        const result = await listConversationTabs(CHAT);
+        expect(result.ok && result.value).toMatchObject({
+          tabs: [{ kind: 'notes' }],
+          tabsError: { code: ErrorCode.RATE_LIMITED, retryable: true },
+        });
+      }
+      const graphCalls = fetchMock.mock.calls.filter(([url]) => url.startsWith('https://graph.microsoft.com'));
+      expect(graphCalls).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -121,7 +153,7 @@ describe('readLoopPage', () => {
   it('renders the Loop file through Graph and returns its text', async () => {
     mockHttp
       .mockResolvedValueOnce(response(item))
-      .mockResolvedValueOnce(response('<h2>Title</h2><ul><li>One</li><li>Two</li></ul>'));
+      .mockResolvedValueOnce(html('<h2>Title</h2><ul><li>One</li><li>Two</li></ul>'));
 
     const result = await readLoopPage(NOTES_URL);
 
@@ -145,6 +177,24 @@ describe('readLoopPage', () => {
     const result = await readLoopPage('https://contoso.sharepoint.com/sites/team/Budget.xlsx');
     expect(result).toMatchObject({ ok: false, error: { code: ErrorCode.INVALID_INPUT, message: expect.stringContaining('teams_download_file') } });
     expect(mockHttp).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts only an HTML rendering, and keeps the Graph token when the storage link is refused', async () => {
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(response('plain text', { 'content-type': 'text/plain' }));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: false, error: { code: ErrorCode.API_ERROR, message: expect.stringContaining('text/plain') } });
+
+    const storage = 'https://contoso.sharepoint.com/_layouts/15/download.aspx?tempauth=x';
+    mockHttp
+      .mockResolvedValueOnce(response(item))
+      .mockResolvedValueOnce(response('', { location: storage }, 302))
+      .mockResolvedValueOnce(err(createError(ErrorCode.AUTH_EXPIRED, 'HTTP 401')));
+    expect(await readLoopPage(NOTES_URL)).toMatchObject({ ok: false, error: { code: ErrorCode.API_ERROR, retryable: true } });
+    const [storageUrl, storageOptions] = mockHttp.mock.calls[4];
+    expect(storageUrl).toBe(storage);
+    expect((storageOptions as { headers: Record<string, string> }).headers).not.toHaveProperty('Authorization');
+    expect(invalidateAccessToken).not.toHaveBeenCalled();
   });
 
   it('discards a token Graph rejects and never reports AUTH_EXPIRED', async () => {

@@ -15,7 +15,7 @@ import { buildThreadMessagesUrl, cursorFromBackwardLink, getConversationProperti
 import { toDriveItemUrl } from './graph-files-api.js';
 import { parseFileAddEvent, isChatNotesTarget, loopHtmlToText, type FileAddTarget } from '../utils/parsers-loop.js';
 import type { RawChatsvcMessage } from '../types/api-responses.js';
-import { MAX_NOTES_TEXT_CHARS, NOTES_SCAN_MAX_PAGES, NOTES_SCAN_PAGE_SIZE } from '../constants.js';
+import { MAX_LOOP_HTML_BYTES, MAX_NOTES_TEXT_CHARS, NOTES_SCAN_MAX_PAGES, NOTES_SCAN_PAGE_SIZE } from '../constants.js';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
@@ -43,7 +43,13 @@ export interface ConversationTabs {
   tabs: ConversationTab[];
   notesSearch?: { messagesScanned: number; reachedStart: boolean; found: boolean };
   /** Set when Graph could not list the app tabs; the Notes tab may still be present. */
-  tabsError?: string;
+  tabsError?: TabsError;
+}
+
+export interface TabsError {
+  code: ErrorCode;
+  message: string;
+  retryable: boolean;
 }
 
 export interface LoopPage {
@@ -132,25 +138,84 @@ export function notesTab(target: FileAddTarget): ConversationTab {
 }
 
 /** Graph GET with the Teams token; auth failures never map to AUTH_* (no auto-login). */
-async function graphGet<T>(url: string, accept = 'application/json'): Promise<Result<T>> {
+async function graphGet<T>(url: string): Promise<Result<T>> {
   const token = await requireGraphTokenAsync();
   if (!token.ok) return token;
   const response = await httpRequest<T>(url, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${token.value}`, Accept: accept },
+    headers: { Authorization: `Bearer ${token.value}`, Accept: 'application/json' },
   });
-  if (response.ok) return ok(response.value.data);
-  const { code, message } = response.error;
-  if (code === ErrorCode.AUTH_EXPIRED) {
-    invalidateAccessToken(token.value);
-    return err(createError(ErrorCode.API_ERROR,
+  return response.ok ? ok(response.value.data) : err(graphFailure(response.error, token.value));
+}
+
+function graphFailure(error: McpError, token: string): McpError {
+  if (error.code === ErrorCode.AUTH_EXPIRED) {
+    invalidateAccessToken(token);
+    return createError(ErrorCode.API_ERROR,
       'Microsoft Graph rejected its access token; it has been discarded, so a retry will request a new one.',
-      { retryable: true }));
+      { retryable: true });
   }
-  if (code === ErrorCode.AUTH_REQUIRED) {
-    return err(createError(ErrorCode.ACCESS_DENIED, `Microsoft Graph refused access: ${message}`, { retryable: false }));
+  if (error.code === ErrorCode.AUTH_REQUIRED) {
+    return createError(ErrorCode.ACCESS_DENIED, `Microsoft Graph refused access: ${error.message}`, { retryable: false });
   }
-  return response;
+  return error;
+}
+
+/**
+ * Graph answers `content?format=html` with a redirect to a pre-authenticated storage URL.
+ * The redirect is followed by hand so the storage request carries no Graph token, and a
+ * refusal there is not blamed on (and does not discard) that token.
+ */
+async function renderLoopHtml(contentUrl: string): Promise<Result<{ html: string; truncated: boolean }>> {
+  const token = await requireGraphTokenAsync();
+  if (!token.ok) return token;
+  const rendered = await httpRequest<string>(contentUrl, {
+    method: 'GET',
+    redirect: 'manual',
+    headers: { Authorization: `Bearer ${token.value}`, Accept: 'text/html' },
+    maxResponseBytes: MAX_LOOP_HTML_BYTES,
+  });
+  if (!rendered.ok) return err(graphFailure(rendered.error, token.value));
+
+  let page = rendered.value;
+  if (page.status >= 300 && page.status < 400) {
+    const location = storageLocation(page.headers.get('location'), contentUrl);
+    if (!location) {
+      return err(createError(ErrorCode.API_ERROR, 'Microsoft Graph redirected the Loop rendering to an unexpected location', { retryable: false }));
+    }
+    const stored = await httpRequest<string>(location, {
+      method: 'GET',
+      headers: { Accept: 'text/html' },
+      maxResponseBytes: MAX_LOOP_HTML_BYTES,
+    });
+    if (!stored.ok) {
+      if (stored.error.code === ErrorCode.AUTH_EXPIRED || stored.error.code === ErrorCode.AUTH_REQUIRED) {
+        return err(createError(ErrorCode.API_ERROR,
+          `The storage link for the rendered Loop page was refused (${stored.error.message}); a retry asks Microsoft Graph for a new one.`,
+          { retryable: true }));
+      }
+      return stored;
+    }
+    page = stored.value;
+  }
+
+  const contentType = page.headers.get('content-type') ?? '';
+  if (!/^\s*text\/html\b/i.test(contentType) || typeof page.data !== 'string') {
+    return err(createError(ErrorCode.API_ERROR,
+      `Microsoft Graph did not return an HTML rendering of this Loop page (content type: ${contentType || 'none'})`,
+      { retryable: false }));
+  }
+  return ok({ html: page.data, truncated: page.truncated === true });
+}
+
+function storageLocation(location: string | null, base: string): string | undefined {
+  if (!location) return undefined;
+  try {
+    const url = new URL(location, base);
+    return url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Strips a channel reply suffix (`;messageid=…`) so the ID names the conversation itself. */
@@ -220,12 +285,12 @@ export async function listConversationTabs(conversationId: string): Promise<Resu
     conversationType: isChannel ? 'channel' : 'chat',
     tabs,
     ...(notesSearch ? { notesSearch } : {}),
-    ...(graphTabs.ok ? {} : { tabsError: describe(graphTabs.error) }),
+    ...(graphTabs.ok ? {} : { tabsError: summarize(graphTabs.error) }),
   });
 }
 
-function describe(error: McpError): string {
-  return `${error.code}: ${error.message}`.slice(0, 300);
+function summarize(error: McpError): TabsError {
+  return { code: error.code, message: error.message.slice(0, 300), retryable: error.retryable };
 }
 
 interface RawLoopItem {
@@ -264,15 +329,12 @@ export async function readLoopPage(url: string): Promise<Result<LoopPage>> {
   }
 
   const contentUrl = `${GRAPH}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(item.id)}/content?format=html`;
-  const html = await graphGet<string>(contentUrl, 'text/html');
+  const html = await renderLoopHtml(contentUrl);
   if (!html.ok) return html;
-  if (typeof html.value !== 'string') {
-    return err(createError(ErrorCode.API_ERROR, 'Microsoft Graph did not return an HTML rendering of this Loop page', { retryable: false }));
-  }
 
-  const fullText = loopHtmlToText(html.value);
-  const truncated = fullText.length > MAX_NOTES_TEXT_CHARS;
-  const text = truncated ? fullText.slice(0, MAX_NOTES_TEXT_CHARS) : fullText;
+  const fullText = loopHtmlToText(html.value.html);
+  const truncated = html.value.truncated || fullText.length > MAX_NOTES_TEXT_CHARS;
+  const text = fullText.slice(0, MAX_NOTES_TEXT_CHARS);
   return ok({
     name: item.name ?? '',
     webUrl: item.webUrl,

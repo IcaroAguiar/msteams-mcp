@@ -24,6 +24,7 @@ import { meetingTools } from './meeting-tools.js';
 import { fileTools } from './file-tools.js';
 import { tagTools } from './tag-tools.js';
 import { assignmentTools } from './assignment-tools.js';
+import { tabTools } from './tab-tools.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registry
@@ -38,6 +39,7 @@ const allTools: RegistryEntry[] = [
   ...meetingTools,
   ...fileTools,
   ...tagTools,
+  ...tabTools,
   ...assignmentTools,
 ];
 
@@ -50,7 +52,7 @@ export const toolCategories: Array<{ name: string; tools: string[] }> = [
   { name: 'Search', tools: searchTools.map(t => t.definition.name) },
   { name: 'Messages', tools: messageTools.map(t => t.definition.name) },
   { name: 'Meetings', tools: meetingTools.map(t => t.definition.name) },
-  { name: 'Files', tools: [...fileTools, ...tagTools].map(t => t.definition.name) },
+  { name: 'Files', tools: [...fileTools, ...tabTools, ...tagTools].map(t => t.definition.name) },
   { name: 'Assignments', tools: assignmentTools.map(t => t.definition.name) },
 ];
 
